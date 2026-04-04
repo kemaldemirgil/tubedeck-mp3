@@ -1,0 +1,10 @@
+node_modules/
+dist/
+release/
+*.log
+Thumbs.db
+.DS_Store
+.tmp-smoke-output/
+.tmp-smoke-userData/
+.codex
+.vscode/

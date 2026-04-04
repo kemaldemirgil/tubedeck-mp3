@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TubeDeck MP3</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <main class="workspace">
+        <header class="panel topbar">
+          <div class="brand-block">
+            <div class="brand-mark">TD</div>
+            <div class="brand-copy">
+              <h1>TubeDeck MP3</h1>
+              <p class="subtle-copy">Preview and download MP3.</p>
+            </div>
+          </div>
+          <span id="statusBadge" class="chip success">Ready</span>
+        </header>
+
+        <section class="panel composer">
+          <div class="panel-header compact-header">
+            <p class="label">New download</p>
+          </div>
+          <form id="previewForm" class="composer-form">
+            <div class="input-row">
+              <input id="videoUrl" name="videoUrl" type="url" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off" />
+              <button id="previewButton" class="primary-button" type="submit">Preview</button>
+            </div>
+          </form>
+          <p id="formMessage" class="form-message"></p>
+        </section>
+
+        <section id="previewPanel" class="panel preview-panel empty-state">
+          <div class="empty-illustration"></div>
+          <div>
+            <h2>No preview</h2>
+            <p class="subtle-copy">Paste a link to load details.</p>
+          </div>
+        </section>
+      </main>
+
+      <aside class="sidebar">
+        <section class="panel utility-panel">
+          <div class="panel-header compact-header">
+            <div>
+              <p class="label">Output</p>
+              <h2>Folder</h2>
+            </div>
+          </div>
+          <p id="outputDirectoryLabel" class="folder-path">Desktop</p>
+          <div class="sidebar-actions">
+            <button id="changeDirectoryButton" class="secondary-button wide-button" type="button">Change</button>
+            <button id="openLogsButton" class="ghost-button wide-button" type="button">Logs</button>
+          </div>
+        </section>
+
+        <section class="panel active-downloads">
+          <div class="panel-header">
+            <h2>Active</h2>
+            <span id="activeCount" class="chip">0 running</span>
+          </div>
+          <div id="activeDownloadsList" class="download-list"></div>
+        </section>
+
+        <section class="panel history-panel">
+          <div class="panel-header">
+            <div>
+              <h2>Recent</h2>
+              <p id="historySummary" class="status-copy">No jobs yet</p>
+            </div>
+            <span id="historyCount" class="chip">0 jobs</span>
+          </div>
+          <div id="historyList" class="history-list"></div>
+        </section>
+      </aside>
+    </div>
+
+    <template id="historyItemTemplate">
+      <button class="history-item" type="button">
+        <div class="history-text">
+          <p class="history-title"></p>
+          <p class="history-meta"></p>
+        </div>
+        <span class="history-status chip"></span>
+      </button>
+    </template>
+
+    <template id="downloadItemTemplate">
+      <article class="download-item">
+        <div class="download-header">
+          <div>
+            <p class="download-title"></p>
+            <p class="download-meta"></p>
+          </div>
+          <div class="download-actions"></div>
+        </div>
+        <div class="progress-track">
+          <div class="progress-fill"></div>
+        </div>
+        <div class="download-stats"></div>
+      </article>
+    </template>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

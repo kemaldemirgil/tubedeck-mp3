@@ -1,0 +1,62 @@
+{
+  "name": "tubedeck-mp3",
+  "version": "1.0.0",
+  "description": "Compact Electron desktop app for previewing YouTube videos and converting them to MP3.",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "pack": "electron-builder --dir",
+    "build": "electron-builder --win dir",
+    "build:installer": "electron-builder --win nsis portable",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "keywords": [
+    "electron",
+    "youtube",
+    "mp3",
+    "desktop",
+    "yt-dlp",
+    "ffmpeg"
+  ],
+  "author": "TubeDeck MP3 contributors",
+  "license": "MIT",
+  "dependencies": {
+    "electron-log": "^5.2.4",
+    "ffmpeg-static": "^5.2.0",
+    "yt-dlp-wrap": "^2.3.12"
+  },
+  "devDependencies": {
+    "electron": "^35.1.4",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.codex.tubedeckmp3",
+    "productName": "TubeDeck MP3",
+    "files": [
+      "electron/**/*",
+      "renderer/**/*",
+      "src/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**/*"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
+    }
+  }
+}
