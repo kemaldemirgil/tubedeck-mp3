@@ -293,9 +293,16 @@ else {
       app.quit();
     });
 }
-app.on("before-quit", () => {
-  downloader?.shutdown();
-  player?.close();
+let quitReady = false,
+  shutdownWait;
+app.on("before-quit", (event) => {
+  if (quitReady || !downloader) return;
+  event.preventDefault();
+  shutdownWait ||= downloader.shutdown().finally(() => {
+    quitReady = true;
+    player?.close();
+    app.quit();
+  });
 });
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();

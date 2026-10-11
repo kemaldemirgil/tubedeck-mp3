@@ -1,6 +1,11 @@
 const fs = require("fs");
 const path = require("path");
-const { spawn, execFile } = require("child_process");
+const { spawn } = require("child_process");
+const {
+  stopProcessTree,
+  waitForProcessStop,
+  waitWithSignal,
+} = require("./process");
 const { createYouTubeService } = require("./youtube");
 const { createFfmpegManager } = require("./ffmpeg");
 const audio = require("./audio");
@@ -58,6 +63,7 @@ const createDownloaderService = ({
   tagAudio = audio.tagAudio,
   spawnProcess = spawn,
   retryDelays = [2000, 6000],
+  inactivityTimeout = 180000,
 }) => {
   const youtube =
     providedYouTube || createYouTubeService({ app, logger, onLogEntry });
@@ -71,12 +77,13 @@ const createDownloaderService = ({
   const jobsRoot = path.join(app.getPath("userData"), "jobs");
   fs.mkdirSync(jobsRoot, { recursive: true });
   const jobs = new Map();
+  const executions = new Set();
   let running = 0,
     paused = false,
     closing = false,
     repaired = null;
   const serial = (job) => {
-    const { child, timer, wakeRetry, ...item } = job;
+    const { child, timer, wakeRetry, abort, ...item } = job;
     return structuredClone(item);
   };
   const log = (level, event, metadata) =>
@@ -188,7 +195,7 @@ const createDownloaderService = ({
     }
   };
   const downloadSource = async (job, ffmpegPath) => {
-    const binary = await youtube.ensure();
+    const binary = await waitWithSignal(youtube.ensure(), job.abort.signal);
     if (job.cancelRequested || closing) return;
     const args = [
       ...youtube.runtimeArgs,
@@ -236,6 +243,7 @@ const createDownloaderService = ({
       let stdout = "",
         stderr = "",
         errors = "",
+        timeoutError = null,
         settled = false;
       const done = (error) => {
         if (settled) return;
@@ -247,11 +255,14 @@ const createDownloaderService = ({
         else resolve();
       };
       const armTimeout = () => {
+        if (timeoutError || job.cancelRequested || closing) return;
         clearTimeout(job.timer);
         job.timer = setTimeout(() => {
-          child.kill();
-          done(new Error("The download timed out without making progress."));
-        }, 180000);
+          timeoutError = new Error(
+            "The download timed out without making progress.",
+          );
+          void stopProcessTree(child);
+        }, inactivityTimeout);
         job.timer.unref?.();
       };
       const consume = (chunk, source) => {
@@ -269,18 +280,56 @@ const createDownloaderService = ({
       child.stdout.on("data", (chunk) => consume(chunk, "stdout"));
       child.stderr.on("data", (chunk) => consume(chunk, "stderr"));
       child.once("error", (error) => done(error));
-      child.once("close", (code) => {
+      child.once("close", async (code) => {
+        await waitForProcessStop(child);
         if (stdout.trim()) progress(job, stdout.trim());
         if (stderr.trim()) trace(job, stderr.trim());
         done(
-          code === 0 || job.cancelRequested || closing
+          job.cancelRequested || closing
             ? null
-            : new Error(errors || "Downloader exited with code " + code),
+            : timeoutError ||
+                (code === 0
+                  ? null
+                  : new Error(errors || "Downloader exited with code " + code)),
         );
       });
       armTimeout();
       emit(job, { status: "downloading" });
     });
+  };
+  const retryOperation = async (job, operation, stage) => {
+    for (let attempt = 0; ; attempt++) {
+      if (job.cancelRequested || closing) return false;
+      try {
+        emit(job, { status: stage, errorMessage: "" });
+        await operation();
+        return true;
+      } catch (error) {
+        trace(job, error.message);
+        if (job.cancelRequested || closing) return false;
+        if (/429|too many requests/i.test(error.message)) {
+          paused = true;
+          emit(job, {
+            status: "interrupted",
+            errorMessage: summarizeError(error.message),
+          });
+          return false;
+        }
+        if (!transient(error.message) || attempt >= retryDelays.length)
+          throw error;
+        emit(job, {
+          status: "retrying",
+          attempt: attempt + 1,
+          errorMessage: "Connection interrupted. Retrying shortly.",
+        });
+        await new Promise((resolve) => {
+          job.timer = setTimeout(resolve, retryDelays[attempt]);
+          job.wakeRetry = resolve;
+        });
+        job.timer = null;
+        delete job.wakeRetry;
+      }
+    }
   };
   const publish = (job, staged) => {
     fs.mkdirSync(job.outputDirectory, { recursive: true });
@@ -316,51 +365,44 @@ const createDownloaderService = ({
     return destination;
   };
   const runJob = async (job) => {
+    job.abort = new AbortController();
     try {
       emit(job, { status: "preparing", errorMessage: "" });
       fs.mkdirSync(workspace(job), { recursive: true });
-      const ffmpegPath = await ffmpeg.ensureFfmpegBinary();
-      const preview =
-        job.preview?.duration > 0
-          ? job.preview
-          : await youtube.fetchPreview(job.url);
-      job.preview = preview;
-      job.videoId = preview.id;
-      job.title = job.metadata?.title || preview.title;
-      job.metadata = normalizeMetadata(job.metadata || {}, preview);
-      job.uploader = preview.uploader;
-      job.thumbnail = preview.thumbnail;
-      job.duration = preview.durationLabel;
+      let ffmpegPath;
+      if (
+        !(await retryOperation(
+          job,
+          async () => {
+            ffmpegPath = await waitWithSignal(
+              ffmpeg.ensureFfmpegBinary(),
+              job.abort.signal,
+            );
+            const preview =
+              job.preview?.duration > 0
+                ? job.preview
+                : await youtube.fetchPreview(job.url, job.abort.signal);
+            job.preview = preview;
+            job.videoId = preview.id;
+            job.title = job.metadata?.title || preview.title;
+            job.metadata = normalizeMetadata(job.metadata || {}, preview);
+            job.uploader = preview.uploader;
+            job.thumbnail = preview.thumbnail;
+            job.duration = preview.durationLabel;
+          },
+          "preparing",
+        ))
+      )
+        return;
       if (job.cancelRequested || closing) return;
-      for (let attempt = 0; ; attempt++) {
-        try {
-          await downloadSource(job, ffmpegPath);
-          break;
-        } catch (error) {
-          trace(job, error.message);
-          if (job.cancelRequested || closing) return;
-          if (/429|too many requests/i.test(error.message)) {
-            paused = true;
-            emit(job, {
-              status: "interrupted",
-              errorMessage: summarizeError(error.message),
-            });
-            return;
-          }
-          if (!transient(error.message) || attempt >= retryDelays.length)
-            throw error;
-          emit(job, {
-            status: "retrying",
-            attempt: attempt + 1,
-            errorMessage: "Connection interrupted. Retrying shortly.",
-          });
-          await new Promise((resolve) => {
-            job.timer = setTimeout(resolve, retryDelays[attempt]);
-            job.wakeRetry = resolve;
-          });
-          delete job.wakeRetry;
-        }
-      }
+      if (
+        !(await retryOperation(
+          job,
+          () => downloadSource(job, ffmpegPath),
+          "downloading",
+        ))
+      )
+        return;
       if (job.cancelRequested || closing) return;
       emit(job, { status: "converting", errorMessage: "" });
       const cover =
@@ -381,6 +423,7 @@ const createDownloaderService = ({
         output: staged,
         metadata: job.metadata,
         cover,
+        signal: job.abort.signal,
       });
       if (job.cancelRequested || closing) return;
       emit(job, { status: "verifying" });
@@ -389,6 +432,7 @@ const createDownloaderService = ({
         job.metadata,
         Boolean(cover),
         ffmpegPath,
+        job.abort.signal,
       );
       if (job.cancelRequested || closing) return;
       job.outputPath = publish(job, staged);
@@ -402,6 +446,7 @@ const createDownloaderService = ({
       if (job.cancelRequested && !closing && ACTIVE.includes(job.status))
         finish(job, "canceled");
       running--;
+      delete job.abort;
       pump();
     }
   };
@@ -413,7 +458,9 @@ const createDownloaderService = ({
       if (job.status !== "queued") continue;
       running++;
       job.status = "preparing";
-      void runJob(job);
+      const execution = runJob(job);
+      executions.add(execution);
+      void execution.finally(() => executions.delete(execution));
     }
   };
   const startDownload = async (payload) => {
@@ -500,7 +547,9 @@ const createDownloaderService = ({
   };
   return {
     warmup: async () => {
+      if (closing) return;
       await youtube.ensure();
+      if (closing) return;
       await ffmpeg.ensureFfmpegBinary();
     },
     searchVideos: youtube.search,
@@ -539,20 +588,19 @@ const createDownloaderService = ({
     },
     reorderQueue: (id, direction) => {
       const entries = [...jobs.values()],
-        index = entries.findIndex((job) => job.id === id);
+        waiting = entries.filter((job) => job.status === "queued"),
+        index = waiting.findIndex((job) => job.id === id);
       const target = direction < 0 ? index - 1 : index + 1;
-      if (
-        index >= 0 &&
-        target >= 0 &&
-        target < entries.length &&
-        entries[index].status === "queued" &&
-        entries[target].status === "queued"
-      ) {
-        [entries[index], entries[target]] = [entries[target], entries[index]];
+      if (index >= 0 && target >= 0 && target < waiting.length) {
+        [waiting[index], waiting[target]] = [waiting[target], waiting[index]];
+        let next = 0;
+        const reordered = entries.map((job) =>
+          job.status === "queued" ? waiting[next++] : job,
+        );
         jobs.clear();
-        entries.forEach((job) => jobs.set(job.id, job));
+        reordered.forEach((job) => jobs.set(job.id, job));
         store.replaceActiveDownloads(
-          entries.filter((job) => ACTIVE.includes(job.status)).map(serial),
+          reordered.filter((job) => ACTIVE.includes(job.status)).map(serial),
         );
       }
       return [...jobs.values()].map(serial);
@@ -561,20 +609,14 @@ const createDownloaderService = ({
       const job = jobs.get(id);
       if (!job || !ACTIVE.includes(job.status)) return { ok: false };
       job.cancelRequested = true;
+      job.abort?.abort();
       if (job.wakeRetry) {
         clearTimeout(job.timer);
         job.timer = null;
         job.wakeRetry();
       }
       if (job.child) {
-        if (process.platform === "win32" && job.child.pid)
-          execFile(
-            "taskkill",
-            ["/pid", String(job.child.pid), "/T", "/F"],
-            { windowsHide: true },
-            () => {},
-          );
-        else job.child.kill("SIGTERM");
+        await stopProcessTree(job.child);
       } else if (["queued", "interrupted"].includes(job.status))
         finish(job, "canceled");
       return { ok: true };
@@ -618,15 +660,10 @@ const createDownloaderService = ({
         });
         clearTimeout(job.timer);
         job.wakeRetry?.();
-        if (job.child?.pid && process.platform === "win32")
-          execFile(
-            "taskkill",
-            ["/pid", String(job.child.pid), "/T", "/F"],
-            { windowsHide: true },
-            () => {},
-          );
-        else job.child?.kill();
+        job.abort?.abort();
+        if (job.child) void stopProcessTree(job.child);
       }
+      return Promise.allSettled([...executions]);
     },
   };
 };

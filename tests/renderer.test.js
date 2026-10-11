@@ -3,7 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const { test } = require("node:test");
-test("a failure arriving before the queue reply keeps its error visible", async () => {
+const createFixture = (overrides = {}) => {
   const elements = new Map();
   const element = (id) => {
     if (!elements.has(id))
@@ -23,7 +23,7 @@ test("a failure arriving before the queue reply keeps its error visible", async 
       });
     return elements.get(id);
   };
-  let downloadUpdate, reply;
+  const subscriptions = {};
   const noop = () => {};
   const context = vm.createContext({
     document: {
@@ -36,13 +36,14 @@ test("a failure arriving before the queue reply keeps its error visible", async 
       addEventListener: noop,
       tubeDeck: {
         getBootstrapState: () => new Promise(() => {}),
-        downloadVideo: () => new Promise((resolve) => (reply = resolve)),
-        onDownloadUpdate: (callback) => (downloadUpdate = callback),
+        onDownloadUpdate: (callback) =>
+          (subscriptions.downloadUpdate = callback),
         onHistoryUpdate: noop,
         onLibraryUpdate: noop,
         onQueueUpdate: noop,
         onSettingsUpdate: noop,
         onUpdateState: noop,
+        ...overrides,
       },
     },
   });
@@ -50,6 +51,13 @@ test("a failure arriving before the queue reply keeps its error visible", async 
     fs.readFileSync(path.join(__dirname, "../renderer/app.js"), "utf8"),
     context,
   );
+  return { element, context, subscriptions };
+};
+test("a failure arriving before the queue reply keeps its error visible", async () => {
+  let reply;
+  const { element, context, subscriptions } = createFixture({
+    downloadVideo: () => new Promise((resolve) => (reply = resolve)),
+  });
   vm.runInContext(
     'state.preview={id:"s_oktKc_wyo",url:"https://youtu.be/s_oktKc_wyo",title:"What I Need"};state.settings={outputDirectory:"Desktop",concurrency:2};',
     context,
@@ -58,7 +66,7 @@ test("a failure arriving before the queue reply keeps its error visible", async 
   element("qualitySelect").value = "high";
   const starting = element("downloadButton").listeners.click();
   const error = "YouTube rejected the audio download (HTTP 403).";
-  downloadUpdate({
+  subscriptions.downloadUpdate({
     id: "job-1",
     videoId: "s_oktKc_wyo",
     title: "What I Need",
@@ -70,4 +78,33 @@ test("a failure arriving before the queue reply keeps its error visible", async 
   await starting;
   assert.equal(element("formMessage").textContent, error);
   assert.equal(element("formMessage").className, "form-message danger");
+});
+
+test("pagination cannot steal cleanup from a pending search", async () => {
+  const replies = [];
+  const { element, context } = createFixture({
+    searchVideos: () => new Promise((resolve) => replies.push(resolve)),
+  });
+  vm.runInContext(
+    'state.settings={outputDirectory:"Desktop"};state.searchQuery="old search";state.results=[{id:"s_oktKc_wyo",title:"Previous result",uploader:"Artist",thumbnail:"",durationLabel:"4:20"}];renderResults();',
+    context,
+  );
+  element("videoUrl").value = "new search";
+  const pendingSearch = element("previewForm").listeners.submit({
+    preventDefault() {},
+  });
+  assert.equal(element("moreResultsButton").disabled, true);
+  await element("moreResultsButton").listeners.click();
+  assert.equal(replies.length, 1);
+  replies[0]([]);
+  await pendingSearch;
+  assert.equal(vm.runInContext("state.busy", context), false);
+  assert.equal(element("previewButton").disabled, false);
+
+  const pendingMore = element("moreResultsButton").listeners.click();
+  assert.equal(element("previewButton").disabled, true);
+  replies[1]([]);
+  await pendingMore;
+  assert.equal(element("previewButton").disabled, false);
+  assert.equal(element("moreResultsButton").disabled, false);
 });

@@ -23,6 +23,8 @@ Search results can differ from personalized YouTube results. Some videos do not 
 
 Each job has a private working folder. The downloader preserves partial files for retries and recovery, uses bounded retries with increasing delays for temporary connection failures, and pauses the queue on YouTube rate limits.
 
+Cancellation, inactivity timeouts, and shutdown stop the job's tool processes before releasing its workspace. On Windows this includes descendant processes, so FFmpeg cannot keep writing into a job that is about to resume.
+
 A successful process exit alone does not count as a completed download. Before publishing the output, TubeDeck checks for readable MP3 audio, verifies the requested title/artist/album and cover artwork, and decodes the audio to detect errors. Final files are published without overwriting existing files. On Windows NTFS, publication uses an exclusive hard link to the verified staged file.
 
 After an interrupted session, pending jobs and their quality, metadata, folder, and working files are restored. Click **Continue downloads** to resume. The durable saved-file library is separate from the 40-entry recent-history list. Existing version-2 settings, history, and interrupted jobs migrate automatically.
@@ -85,6 +87,7 @@ The release command requires all four variables and enforces code signing. It pr
 - src/main/downloader.js: persistent queue, download stages, retries, recovery, and publication.
 - src/main/youtube.js: yt-dlp setup, search, playlists, and metadata.
 - src/main/audio.js: MP3 tagging, artwork, and validation.
+- src/main/process.js: cancellable tool execution and Windows process-tree cleanup.
 - src/main/media.js: URL normalization, video identity, filenames, and presets.
 - src/main/store.js: versioned state, settings, history, and saved-file library.
 - src/main/player-server.js: token-protected loopback player, artwork, and range-capable MP3 streaming.

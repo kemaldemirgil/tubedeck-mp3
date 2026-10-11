@@ -1,6 +1,6 @@
 const fs = require("fs");
 const path = require("path");
-const { execFile } = require("child_process");
+const { runProcess, waitWithSignal } = require("./process");
 const YTDlpWrap = require("yt-dlp-wrap").default;
 const {
   youtubeUrl,
@@ -24,23 +24,12 @@ const createYouTubeService = ({ app, logger, onLogEntry = () => {} }) => {
   let ready;
   const log = (level, event, metadata) =>
     onLogEntry(logger[level](event, metadata));
-  const exec = (args, timeout = 60000) =>
-    new Promise((resolve, reject) => {
-      execFile(
-        binaryPath,
-        args,
-        {
-          windowsHide: true,
-          timeout,
-          maxBuffer: 12 * 1024 * 1024,
-          env: environment,
-        },
-        (error, stdout, stderr) => {
-          if (error)
-            reject(new Error(String(stderr || error.message).slice(-5000)));
-          else resolve(stdout);
-        },
-      );
+  const exec = (args, timeout = 60000, signal) =>
+    runProcess(binaryPath, args, {
+      timeout,
+      signal,
+      maxBuffer: 12 * 1024 * 1024,
+      env: environment,
     });
   const prepare = async () => {
     fs.mkdirSync(binDirectory, { recursive: true });
@@ -67,9 +56,9 @@ const createYouTubeService = ({ app, logger, onLogEntry = () => {} }) => {
       ready = null;
       throw error;
     }));
-  const run = async (args) => {
-    await ensure();
-    return exec([...runtimeArgs, ...args]);
+  const run = async (args, signal) => {
+    await waitWithSignal(ensure(), signal);
+    return exec([...runtimeArgs, ...args], 60000, signal);
   };
   const normalize = (data) => ({
     id: data.id,
@@ -111,15 +100,18 @@ const createYouTubeService = ({ app, logger, onLogEntry = () => {} }) => {
       await ensure();
       return (await exec(["--version"], 10000)).trim();
     },
-    fetchPreview: async (input) =>
+    fetchPreview: async (input, signal) =>
       normalize(
         JSON.parse(
-          await run([
-            "--dump-single-json",
-            "--no-playlist",
-            "--skip-download",
-            youtubeUrl(input).href,
-          ]),
+          await run(
+            [
+              "--dump-single-json",
+              "--no-playlist",
+              "--skip-download",
+              youtubeUrl(input).href,
+            ],
+            signal,
+          ),
         ),
       ),
     search: async (query, count = 12) => {

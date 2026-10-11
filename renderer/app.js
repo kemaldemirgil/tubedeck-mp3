@@ -103,13 +103,15 @@ const timeAgo = (date) => {
         ? Math.floor(seconds / 3600) + "h ago"
         : new Date(date).toLocaleDateString();
 };
-const button = (text, action, id, style = "text-button") =>
+const button = (text, action, id, style = "text-button", label = text) =>
   '<button class="' +
   style +
   '" data-action="' +
   action +
   '" data-id="' +
   escapeHtml(id) +
+  '" aria-label="' +
+  escapeHtml(label) +
   '">' +
   text +
   "</button>";
@@ -164,7 +166,7 @@ const renderQueue = () => {
       ? "Up to " + state.settings.concurrency + " downloads at once"
       : "No downloads waiting.";
   $("activeDownloadsList").innerHTML = jobs
-    .map((job, index) => {
+    .map((job) => {
       const moving = job.status === "queued",
         percent = Math.max(0, Math.min(100, job.progressPercent || 0));
       return (
@@ -197,7 +199,8 @@ const renderQueue = () => {
           ? button("Continue", "retry", job.id)
           : "") +
         (moving
-          ? button("↑", "up", job.id) + button("↓", "down", job.id)
+          ? button("↑", "up", job.id, "text-button", "Move download earlier") +
+            button("↓", "down", job.id, "text-button", "Move download later")
           : "") +
         button("Cancel", "cancel", job.id) +
         button("Details", "details", job.id) +
@@ -293,6 +296,7 @@ const renderResults = () => {
     )
     .join("");
   $("moreResultsButton").hidden = !state.searchQuery || state.searchCount >= 48;
+  $("moreResultsButton").disabled = state.busy;
 };
 const updateFilename = async () => {
   const sequence = ++filenameNumber;
@@ -441,6 +445,12 @@ const showPlaylist = (url) => {
   $("chooseTracksButton").hidden = false;
   $("playlistDialog").showModal();
 };
+const setSearchBusy = (value) => {
+  state.busy = value;
+  $("previewButton").disabled = value;
+  $("moreResultsButton").disabled = value;
+  renderStatus();
+};
 $("previewForm").addEventListener(
   "submit",
   safely(async (event) => {
@@ -455,10 +465,8 @@ $("previewForm").addEventListener(
       return;
     }
     const sequence = ++requestNumber;
-    state.busy = true;
-    $("previewButton").disabled = true;
+    setSearchBusy(true);
     message("Searching…");
-    renderStatus();
     try {
       if (/^https?:\/\//i.test(input)) {
         const result = await api.previewVideo(input);
@@ -480,9 +488,7 @@ $("previewForm").addEventListener(
       }
     } finally {
       if (sequence === requestNumber) {
-        state.busy = false;
-        $("previewButton").disabled = false;
-        renderStatus();
+        setSearchBusy(false);
       }
     }
   }),
@@ -500,8 +506,9 @@ $("resultsList").addEventListener(
 $("moreResultsButton").addEventListener(
   "click",
   safely(async () => {
+    if (state.busy) return;
     const sequence = ++requestNumber;
-    $("moreResultsButton").disabled = true;
+    setSearchBusy(true);
     try {
       const count = Math.min(48, state.searchCount + 12);
       const results = await api.searchVideos(state.searchQuery, count);
@@ -510,7 +517,7 @@ $("moreResultsButton").addEventListener(
       state.results = results;
       renderResults();
     } finally {
-      $("moreResultsButton").disabled = false;
+      if (sequence === requestNumber) setSearchBusy(false);
     }
   }),
 );
@@ -561,7 +568,9 @@ $("changeDirectoryButton").addEventListener(
 $("pauseQueueButton").addEventListener(
   "click",
   safely(async () => {
-    state.paused = (await api.setQueuePaused(!state.paused)).paused;
+    state.paused = (
+      state.paused ? await api.resumeRecovery() : await api.setQueuePaused(true)
+    ).paused;
     renderQueue();
   }),
 );

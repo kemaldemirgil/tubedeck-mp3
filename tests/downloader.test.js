@@ -54,6 +54,7 @@ const setup = (t, { updateError = null } = {}) => {
   delete require.cache[require.resolve("../src/main/ffmpeg")];
   delete require.cache[require.resolve("../src/main/youtube")];
   delete require.cache[require.resolve("../src/main/audio")];
+  delete require.cache[require.resolve("../src/main/process")];
   const { createDownloaderService } = require("../src/main/downloader");
   const service = createDownloaderService({
     app: { getPath: () => directory },
@@ -143,5 +144,26 @@ test("an unavailable update service preserves the installed downloader", async (
       ({ level, event }) =>
         level === "warn" && event === "downloader.binary.update.failed",
     ),
+  );
+});
+
+test("shutdown releases a job waiting for shared YouTube setup without starting more tools", async (t) => {
+  const fixture = setup(t);
+  const warming = fixture.service.warmup();
+  await fixture.service.startDownload({ url: "https://youtu.be/s_oktKc_wyo" });
+  await new Promise(setImmediate);
+  await fixture.service.shutdown();
+  const count = fixture.calls.length;
+  fixture.finishUpdate();
+  await warming;
+  await new Promise(setImmediate);
+  assert.equal(fixture.calls.length, count);
+  assert.equal(
+    fixture.calls.some(({ args }) => args.includes("--dump-single-json")),
+    false,
+  );
+  assert.equal(
+    fixture.calls.some(({ args }) => args.includes("--extract-audio")),
+    false,
   );
 });

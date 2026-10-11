@@ -1,26 +1,15 @@
 const fs = require("fs");
 const path = require("path");
-const { execFile } = require("child_process");
+const { runProcess } = require("./process");
 const ffprobeStatic = require("ffprobe-static");
 const bundledPath = (value) =>
   value.replace(
     `${path.sep}app.asar${path.sep}`,
     `${path.sep}app.asar.unpacked${path.sep}`,
   );
-const run = (binary, args, timeout = 120000) =>
-  new Promise((resolve, reject) => {
-    execFile(
-      binary,
-      args,
-      { windowsHide: true, timeout, maxBuffer: 4 * 1024 * 1024 },
-      (error, stdout, stderr) => {
-        if (error)
-          reject(new Error(String(stderr || error.message).slice(-2000)));
-        else resolve(stdout);
-      },
-    );
-  });
-const inspect = async (file) => {
+const run = (binary, args, timeout = 120000, signal) =>
+  runProcess(binary, args, { timeout, signal });
+const inspect = async (file, signal) => {
   if (
     !file ||
     !fs.existsSync(file) ||
@@ -29,15 +18,12 @@ const inspect = async (file) => {
   )
     throw new Error("The finished MP3 file is missing or empty.");
   const data = JSON.parse(
-    await run(bundledPath(ffprobeStatic.path), [
-      "-v",
-      "error",
-      "-show_streams",
-      "-show_format",
-      "-of",
-      "json",
-      file,
-    ]),
+    await run(
+      bundledPath(ffprobeStatic.path),
+      ["-v", "error", "-show_streams", "-show_format", "-of", "json", file],
+      120000,
+      signal,
+    ),
   );
   if (
     !data.streams?.some(
@@ -48,8 +34,8 @@ const inspect = async (file) => {
     throw new Error("The downloaded file does not contain readable MP3 audio.");
   return data;
 };
-const validateAudio = async (file, metadata, expectArtwork, ffmpeg) => {
-  const data = await inspect(file);
+const validateAudio = async (file, metadata, expectArtwork, ffmpeg, signal) => {
+  const data = await inspect(file, signal);
   const tags = Object.fromEntries(
     Object.entries(data.format?.tags || {}).map(([key, value]) => [
       key.toLowerCase(),
@@ -68,6 +54,7 @@ const validateAudio = async (file, metadata, expectArtwork, ffmpeg) => {
     ffmpeg,
     ["-v", "error", "-xerror", "-i", file, "-map", "0:a:0", "-f", "null", "-"],
     Math.max(120000, Number(data.format.duration) * 1000),
+    signal,
   );
   return {
     durationSeconds: Number(data.format.duration),
@@ -78,7 +65,7 @@ const validateAudio = async (file, metadata, expectArtwork, ffmpeg) => {
     tags,
   };
 };
-const tagAudio = async ({ ffmpeg, input, output, metadata, cover }) => {
+const tagAudio = async ({ ffmpeg, input, output, metadata, cover, signal }) => {
   const args = ["-y", "-v", "error", "-i", input];
   if (cover) args.push("-i", cover);
   args.push("-map", "0:a:0");
@@ -102,6 +89,6 @@ const tagAudio = async ({ ffmpeg, input, output, metadata, cover }) => {
       "comment=Cover (front)",
     );
   args.push(output);
-  await run(ffmpeg, args);
+  await run(ffmpeg, args, 120000, signal);
 };
 module.exports = { validateAudio, tagAudio, inspect, run, bundledPath };

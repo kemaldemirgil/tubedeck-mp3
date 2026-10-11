@@ -102,8 +102,8 @@ const setup = (t, options = {}) => {
     retryDelays: [10, 20],
     ...options.dependencies,
   });
-  t.after(() => {
-    service.shutdown();
+  t.after(async () => {
+    await service.shutdown();
     fs.rmSync(directory, { recursive: true, force: true });
   });
   return { app, logger, directory, store, service, calls, children, preview };
@@ -187,7 +187,7 @@ test("queue limits concurrency, deduplicates videos, and restores interrupted se
   });
   assert.equal(duplicate.id, one.id);
   assert.equal(fixture.children.length, 1);
-  fixture.service.shutdown();
+  await fixture.service.shutdown();
   const reopened = createDownloaderService({
     app: fixture.app,
     logger: fixture.logger,
@@ -208,7 +208,7 @@ test("queue limits concurrency, deduplicates videos, and restores interrupted se
     reopened.getDownloads().find((job) => job.id === two.id).status,
     "interrupted",
   );
-  reopened.shutdown();
+  await reopened.shutdown();
 });
 test("transient failures retry, while rate limiting pauses the queue", async (t) => {
   const fixture = setup(t);
@@ -230,9 +230,120 @@ test("pending jobs can be reordered and canceled without launching a downloader"
   const two = await fixture.service.startDownload({
     url: "https://youtu.be/jfKfPfyJRdk",
   });
-  fixture.service.reorderQueue(two.id, -1);
-  assert.equal(fixture.store.getActiveDownloads()[0].id, two.id);
-  await fixture.service.cancelDownload(one.id);
+  const three = await fixture.service.startDownload({
+    url: "https://youtu.be/jNQXAC9IVRw",
+  });
+  await fixture.service.cancelDownload(two.id);
+  fixture.service.reorderQueue(three.id, -1);
+  assert.deepEqual(
+    fixture.store.getActiveDownloads().map((job) => job.id),
+    [three.id, one.id],
+  );
   assert.equal(fixture.calls.length, 0);
   assert.equal(fixture.store.getHistory()[0].status, "canceled");
+});
+
+test("preparation retries network failures and pauses before starting another job on rate limits", async (t) => {
+  let attempts = 0;
+  const fixture = setup(t, {
+    dependencies: {
+      youtube: {
+        fetchPreview: async () => {
+          attempts++;
+          if (attempts === 1) throw new Error("Connection timed out");
+          throw new Error("HTTP Error 429: Too Many Requests");
+        },
+      },
+    },
+  });
+  fixture.store.updateSettings({ concurrency: 1 });
+  await fixture.service.startDownload({ url: "https://youtu.be/s_oktKc_wyo" });
+  await fixture.service.startDownload({ url: "https://youtu.be/jfKfPfyJRdk" });
+  await waitFor(() => fixture.service.getQueueState().paused);
+  assert.equal(attempts, 2);
+  assert.deepEqual(
+    fixture.service.getDownloads().map((job) => job.status),
+    ["interrupted", "queued"],
+  );
+  assert.equal(fixture.store.getHistory().length, 0);
+  assert.equal(fixture.children.length, 0);
+});
+
+test("an inactivity timeout keeps its workspace and concurrency slot until the child closes", async (t) => {
+  const fixture = setup(t, { dependencies: { inactivityTimeout: 30 } });
+  fixture.store.updateSettings({ concurrency: 1 });
+  await fixture.service.startDownload({ url: "https://youtu.be/s_oktKc_wyo" });
+  await waitFor(() => fixture.children.length === 1);
+  const first = fixture.children[0];
+  let stopped = false;
+  first.kill = () => {
+    stopped = true;
+  };
+  await fixture.service.startDownload({ url: "https://youtu.be/jfKfPfyJRdk" });
+  await waitFor(() => stopped);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(fixture.children.length, 1);
+  assert.equal(fixture.service.getDownloads()[0].status, "downloading");
+  first.emit("close", 143);
+  await waitFor(() => fixture.children.length === 2);
+  await fixture.service.cancelDownload(fixture.service.getDownloads()[0].id);
+  await waitFor(() => fixture.children.length === 3);
+  assert.equal(fixture.service.getDownloads()[1].status, "downloading");
+});
+
+test("cancel and shutdown stop audio conversion before releasing jobs or returning", async (t) => {
+  let conversions = 0;
+  const fixture = setup(t, {
+    automatic: true,
+    dependencies: {
+      tagAudio: async ({ signal }) => {
+        conversions++;
+        await run(
+          process.execPath,
+          ["-e", "setInterval(()=>{},1000)"],
+          5000,
+          signal,
+        );
+      },
+    },
+  });
+  fixture.store.updateSettings({ concurrency: 1 });
+  const first = await fixture.service.startDownload({
+    url: "https://youtu.be/s_oktKc_wyo",
+  });
+  const second = await fixture.service.startDownload({
+    url: "https://youtu.be/jfKfPfyJRdk",
+  });
+  await waitFor(() => conversions === 1);
+  await fixture.service.cancelDownload(first.id);
+  await waitFor(() => conversions === 2);
+  assert.equal(fixture.store.getHistory()[0].status, "canceled");
+  await fixture.service.shutdown();
+  assert.equal(
+    fixture.store.getActiveDownloads().find((job) => job.id === second.id)
+      .status,
+    "interrupted",
+  );
+  assert.equal(fixture.store.getLibrary().length, 0);
+});
+
+test("shutdown does not wait for shared tool setup or start a job after it resolves", async (t) => {
+  let ready;
+  const fixture = setup(t, {
+    dependencies: {
+      ffmpeg: {
+        ensureFfmpegBinary: () =>
+          new Promise((resolve) => {
+            ready = resolve;
+          }),
+      },
+    },
+  });
+  await fixture.service.startDownload({ url: "https://youtu.be/s_oktKc_wyo" });
+  await waitFor(() => ready);
+  await fixture.service.shutdown();
+  ready(ffmpegPath);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(fixture.calls.length, 0);
+  assert.equal(fixture.store.getActiveDownloads()[0].status, "interrupted");
 });
