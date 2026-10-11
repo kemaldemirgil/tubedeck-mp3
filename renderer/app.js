@@ -1,343 +1,926 @@
+const api = window.tubeDeck;
 const state = {
-  settings: {
-    outputDirectory: ""
-  },
+  settings: {},
   history: [],
   downloads: [],
-  logs: [],
+  library: [],
+  results: [],
   preview: null,
-  busy: false
+  cover: null,
+  busy: false,
+  paused: false,
+  player: null,
+  searchQuery: "",
+  searchCount: 12,
+  playlistUrl: "",
+  playlist: [],
 };
-
-// Cache stable DOM references once; the rest of the UI is rendered by updating sections in place.
-const dom = {
-  previewForm: document.querySelector("#previewForm"),
-  videoUrl: document.querySelector("#videoUrl"),
-  previewButton: document.querySelector("#previewButton"),
-  previewPanel: document.querySelector("#previewPanel"),
-  formMessage: document.querySelector("#formMessage"),
-  statusBadge: document.querySelector("#statusBadge"),
-  historyList: document.querySelector("#historyList"),
-  historyItemTemplate: document.querySelector("#historyItemTemplate"),
-  downloadItemTemplate: document.querySelector("#downloadItemTemplate"),
-  activeDownloadsList: document.querySelector("#activeDownloadsList"),
-  outputDirectoryLabel: document.querySelector("#outputDirectoryLabel"),
-  activeCount: document.querySelector("#activeCount"),
-  historyCount: document.querySelector("#historyCount"),
-  historySummary: document.querySelector("#historySummary"),
-  changeDirectoryButton: document.querySelector("#changeDirectoryButton"),
-  openLogsButton: document.querySelector("#openLogsButton")
-};
-
-const numberFormatter = new Intl.NumberFormat();
-
+const $ = (id) => document.getElementById(id);
 const escapeHtml = (value = "") =>
-  value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-
-const timeAgo = (value) => {
-  if (!value) {
-    return "";
-  }
-
-  const date = new Date(value);
-  const seconds = Math.round((date.getTime() - Date.now()) / 1000);
-  const formatter = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
-  const units = [
-    ["day", 86400],
-    ["hour", 3600],
-    ["minute", 60]
-  ];
-
-  for (const [unit, divisor] of units) {
-    const delta = Math.round(seconds / divisor);
-    if (Math.abs(delta) >= 1) {
-      return formatter.format(delta, unit);
-    }
-  }
-
-  return formatter.format(seconds, "second");
+  String(value).replace(
+    /[&<>"']/g,
+    (char) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+        char
+      ],
+  );
+const ACTIVE = [
+  "queued",
+  "preparing",
+  "downloading",
+  "converting",
+  "verifying",
+  "retrying",
+  "interrupted",
+];
+const labels = {
+  queued: "Queued",
+  preparing: "Preparing",
+  downloading: "Downloading",
+  converting: "Converting",
+  verifying: "Verifying file",
+  completed: "Complete",
+  failed: "Failed",
+  canceled: "Canceled",
+  retrying: "Retrying",
+  interrupted: "Interrupted",
 };
-
-const statusTone = (status) => {
-  if (status === "completed") {
-    return "success";
-  }
-
-  if (status === "failed" || status === "canceled") {
-    return "danger";
-  }
-
-  if (status === "running") {
-    return "accent";
-  }
-
-  return "";
+const tone = (status) =>
+  status === "completed"
+    ? "success"
+    : status === "failed"
+      ? "danger"
+      : ACTIVE.includes(status)
+        ? "accent"
+        : "";
+let requestNumber = 0,
+  selectionNumber = 0,
+  filenameNumber = 0;
+const message = (text = "", type = "") => {
+  $("formMessage").textContent = text;
+  $("formMessage").className = "form-message " + type;
+  $("formMessage").setAttribute("role", type === "danger" ? "alert" : "status");
+  $("formMessage").setAttribute(
+    "aria-live",
+    type === "danger" ? "assertive" : "polite",
+  );
 };
-
-const setBusy = (busy, label) => {
-  state.busy = busy;
-  dom.previewButton.disabled = busy;
-  dom.statusBadge.textContent = label;
-  dom.statusBadge.className = `chip ${busy ? "accent" : "success"}`;
-};
-
-const setMessage = (message = "", tone = "") => {
-  dom.formMessage.textContent = message;
-  dom.formMessage.className = `form-message ${tone}`.trim();
-};
-
-const pluralize = (count, singular, plural = `${singular}s`) => `${count} ${count === 1 ? singular : plural}`;
-
-const renderOutputDirectory = () => {
-  dom.outputDirectoryLabel.textContent = state.settings.outputDirectory || "Desktop";
-};
-
-const renderPreview = () => {
-  if (!state.preview) {
-    dom.previewPanel.className = "panel preview-panel empty-state";
-    dom.previewPanel.innerHTML = `
-      <div class="empty-illustration"></div>
-      <div>
-        <h2>No preview</h2>
-        <p class="subtle-copy">Paste a link to load details.</p>
-      </div>
-    `;
-    return;
-  }
-
-  const preview = state.preview;
-  const description = preview.description ? `${escapeHtml(preview.description.slice(0, 88))}${preview.description.length > 88 ? "…" : ""}` : "";
-  const views = preview.viewCount ? `${numberFormatter.format(preview.viewCount)} views` : "View count unavailable";
-  const outputDirectory = escapeHtml(state.settings.outputDirectory || "Desktop");
-  const descriptionMarkup = description ? `<p class="subtle-copy preview-description">${description}</p>` : "";
-
-  dom.previewPanel.className = "panel preview-panel";
-  dom.previewPanel.innerHTML = `
-    <div class="preview-media">
-      <img src="${escapeHtml(preview.thumbnail)}" alt="" />
-    </div>
-    <div class="preview-content">
-      <div class="preview-topline">
-        <span class="chip accent">Ready to download</span>
-        <span class="chip">${escapeHtml(preview.durationLabel)}</span>
-      </div>
-      <h2>${escapeHtml(preview.title)}</h2>
-      <p class="preview-meta">${escapeHtml(preview.uploader)} • ${escapeHtml(views)}</p>
-      ${descriptionMarkup}
-      <div class="preview-facts">
-        <div class="preview-fact">
-          <span class="label">Format</span>
-          <strong>MP3</strong>
-        </div>
-        <div class="preview-fact">
-          <span class="label">Folder</span>
-          <strong>${outputDirectory}</strong>
-        </div>
-      </div>
-      <div class="preview-actions">
-        <button id="downloadButton" class="primary-button" type="button">Download</button>
-        <button id="copyUrlButton" class="secondary-button" type="button">Keep</button>
-      </div>
-    </div>
-  `;
-
-  const downloadButton = document.querySelector("#downloadButton");
-  const copyUrlButton = document.querySelector("#copyUrlButton");
-
-  downloadButton.addEventListener("click", async () => {
+const safely =
+  (callback) =>
+  async (...args) => {
     try {
-      setMessage("Starting download…");
-      setBusy(true, "Downloading");
-      await window.tubeDeck.downloadVideo({
-        url: state.preview.url,
-        preview: state.preview,
-        outputDirectory: state.settings.outputDirectory
-      });
-      setMessage(`Downloading "${state.preview.title}" to ${state.settings.outputDirectory}.`, "success");
+      await callback(...args);
     } catch (error) {
-      setMessage(error.message, "danger");
-    } finally {
-      setBusy(false, "Ready");
+      message(error.message, "danger");
     }
-  });
-
-  copyUrlButton.addEventListener("click", () => {
-    dom.videoUrl.value = preview.url;
-    setMessage("URL kept in the composer.", "success");
-  });
+  };
+const folderName = () =>
+  (state.settings.outputDirectory || "Desktop")
+    .split(/[\\/]/)
+    .filter(Boolean)
+    .at(-1);
+const selectedJob = () =>
+  state.downloads
+    .filter((job) => job.videoId === state.preview?.id)
+    .sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt))[0];
+const existingFile = () =>
+  state.library.find(
+    (item) => item.videoId === state.preview?.id && item.available,
+  );
+const metadata = () => ({
+  title: $("metadataTitle").value,
+  artist: $("metadataArtist").value,
+  album: $("metadataAlbum").value,
+  coverPath: state.cover?.path || "",
+});
+const timeAgo = (date) => {
+  const seconds = Math.max(0, Math.round((Date.now() - new Date(date)) / 1000));
+  return seconds < 60
+    ? "Just now"
+    : seconds < 3600
+      ? Math.floor(seconds / 60) + "m ago"
+      : seconds < 86400
+        ? Math.floor(seconds / 3600) + "h ago"
+        : new Date(date).toLocaleDateString();
 };
-
+const button = (text, action, id, style = "text-button") =>
+  '<button class="' +
+  style +
+  '" data-action="' +
+  action +
+  '" data-id="' +
+  escapeHtml(id) +
+  '">' +
+  text +
+  "</button>";
+const renderStatus = () => {
+  const job = selectedJob(),
+    active = state.downloads.filter((item) => ACTIVE.includes(item.status));
+  const current = state.busy
+    ? "Searching…"
+    : active.length
+      ? state.paused
+        ? "Queue paused"
+        : active.filter(
+            (item) => !["queued", "interrupted"].includes(item.status),
+          ).length + " active"
+      : job
+        ? labels[job.status]
+        : existingFile()
+          ? "Already downloaded"
+          : "Ready";
+  $("statusBadge").textContent = current;
+  $("statusBadge").className =
+    "chip " + (active.length ? "accent" : job ? tone(job.status) : "");
+  if (!state.preview) return;
+  $("previewStage").textContent = job
+    ? labels[job.status] +
+      (job.status === "downloading"
+        ? " · " + Math.round(job.progressPercent) + "%"
+        : "")
+    : existingFile()
+      ? "Already downloaded"
+      : "Ready to download";
+  $("previewStage").className =
+    "chip " + (job ? tone(job.status) : existingFile() ? "success" : "");
+  const inProgress = job && ACTIVE.includes(job.status);
+  $("downloadButton").disabled = Boolean(inProgress);
+  $("downloadButton").textContent = inProgress
+    ? labels[job.status] + "…"
+    : "Download MP3";
+  $("downloadButton").hidden = Boolean(existingFile() && !inProgress);
+  $("existingActions").hidden = !existingFile();
+  $("previewFacts").textContent = "MP3 · Save to " + folderName();
+  $("previewFacts").title = state.settings.outputDirectory;
+};
+const renderQueue = () => {
+  const jobs = state.downloads.filter((job) => ACTIVE.includes(job.status));
+  $("activeCount").textContent = jobs.length || "";
+  $("pauseQueueButton").textContent = state.paused ? "Resume" : "Pause";
+  $("pauseQueueButton").disabled = !jobs.length;
+  $("queueMessage").textContent = state.paused
+    ? "Queue paused. Current downloads can finish."
+    : jobs.length
+      ? "Up to " + state.settings.concurrency + " downloads at once"
+      : "No downloads waiting.";
+  $("activeDownloadsList").innerHTML = jobs
+    .map((job, index) => {
+      const moving = job.status === "queued",
+        percent = Math.max(0, Math.min(100, job.progressPercent || 0));
+      return (
+        '<article class="download-item"><div class="item-heading"><p class="item-title">' +
+        escapeHtml(job.title) +
+        '</p><span class="chip ' +
+        tone(job.status) +
+        '">' +
+        labels[job.status] +
+        "</span></div>" +
+        (!["queued", "interrupted"].includes(job.status)
+          ? '<progress max="100" value="' +
+            percent +
+            '" aria-label="' +
+            escapeHtml(job.title + " download progress") +
+            '"></progress>'
+          : "") +
+        '<p class="item-meta">' +
+        escapeHtml(
+          job.errorMessage ||
+            (job.status === "downloading"
+              ? Math.round(percent) +
+                "% · " +
+                (job.speed || "Connecting") +
+                (job.eta ? " · " + job.eta + " left" : "")
+              : ""),
+        ) +
+        '</p><div class="item-actions">' +
+        (job.status === "interrupted"
+          ? button("Continue", "retry", job.id)
+          : "") +
+        (moving
+          ? button("↑", "up", job.id) + button("↓", "down", job.id)
+          : "") +
+        button("Cancel", "cancel", job.id) +
+        button("Details", "details", job.id) +
+        "</div></article>"
+      );
+    })
+    .join("");
+  $("recoveryBanner").hidden = !jobs.some(
+    (job) => job.status === "interrupted",
+  );
+  $("recoveryMessage").textContent =
+    jobs.filter((job) => job.status === "interrupted").length +
+    " interrupted download(s) are ready to continue.";
+  renderStatus();
+};
 const renderHistory = () => {
-  dom.historyList.innerHTML = "";
-  dom.historyCount.textContent = pluralize(state.history.length, "job");
-  dom.historySummary.textContent = state.history.length
-    ? `${state.history.filter((item) => item.status === "completed").length} complete`
-    : "No jobs yet";
-
-  if (!state.history.length) {
-    dom.historyList.innerHTML = `<p class="subtle-copy">Completed and failed downloads show up here.</p>`;
-    return;
+  const groups = new Map();
+  for (const item of state.history.filter(
+    (job) => !ACTIVE.includes(job.status),
+  )) {
+    const key = item.videoId || item.url || item.id;
+    if (!groups.has(key)) groups.set(key, { item, attempts: 0 });
+    groups.get(key).attempts++;
   }
-
-  state.history.forEach((item) => {
-    const fragment = dom.historyItemTemplate.content.cloneNode(true);
-    const button = fragment.querySelector(".history-item");
-    const title = fragment.querySelector(".history-title");
-    const meta = fragment.querySelector(".history-meta");
-    const status = fragment.querySelector(".history-status");
-
-    title.textContent = item.title || "Untitled video";
-    meta.textContent = `${item.status.toUpperCase()} • ${timeAgo(item.startedAt)}${item.outputPath ? " • File ready" : ""}`;
-    status.textContent = item.status;
-    status.className = `history-status chip ${statusTone(item.status)}`.trim();
-
-    button.addEventListener("click", async () => {
-      if (item.outputPath) {
-        await window.tubeDeck.showItemInFolder(item.outputPath);
-        return;
-      }
-
-      if (item.outputDirectory) {
-        await window.tubeDeck.openPath(item.outputDirectory);
-      }
-    });
-
-    dom.historyList.appendChild(fragment);
-  });
+  $("historyCount").textContent = groups.size ? groups.size + " tracks" : "";
+  $("historySummary").textContent =
+    state.history.filter((item) => item.status === "completed").length +
+    " completed";
+  $("historyList").innerHTML = groups.size
+    ? [...groups.values()]
+        .map(({ item, attempts }) => {
+          const file = state.library.find(
+            (entry) => entry.videoId === item.videoId && entry.available,
+          );
+          return (
+            '<article class="history-item"><div class="item-heading"><p class="item-title">' +
+            escapeHtml(item.title) +
+            '</p><span class="chip ' +
+            tone(item.status) +
+            '">' +
+            labels[item.status] +
+            '</span></div><p class="item-meta">' +
+            escapeHtml(
+              timeAgo(item.completedAt || item.startedAt) +
+                (attempts > 1 ? " · " + attempts + " attempts" : "") +
+                (item.status === "completed" && !file ? " · File missing" : ""),
+            ) +
+            "</p>" +
+            (item.errorMessage
+              ? '<p class="item-error">' +
+                escapeHtml(item.errorMessage) +
+                "</p>"
+              : "") +
+            '<div class="item-actions">' +
+            (file
+              ? button("Play", "play", item.id) +
+                button("Show file", "show", item.id)
+              : item.status === "completed"
+                ? button("Download again", "again", item.id)
+                : "") +
+            (["failed", "canceled"].includes(item.status)
+              ? button("Retry", "retry", item.id)
+              : "") +
+            button("Details", "details", item.id) +
+            "</div></article>"
+          );
+        })
+        .join("")
+    : '<p class="subtle-copy empty-copy">Your downloaded tracks will appear here.</p>';
 };
-
-const renderDownloads = () => {
-  // Only queued/running jobs stay in the active section; completed jobs live in history.
-  const activeDownloads = state.downloads.filter((item) => ["queued", "running"].includes(item.status));
-
-  dom.activeCount.textContent = pluralize(activeDownloads.length, "running job", "running jobs");
-  dom.activeDownloadsList.innerHTML = "";
-
-  if (!activeDownloads.length) {
-    dom.activeDownloadsList.innerHTML = `<p class="subtle-copy">No active downloads.</p>`;
-    return;
-  }
-
-  activeDownloads.forEach((download) => {
-    const fragment = dom.downloadItemTemplate.content.cloneNode(true);
-    const root = fragment.querySelector(".download-item");
-    const title = fragment.querySelector(".download-title");
-    const meta = fragment.querySelector(".download-meta");
-    const actions = fragment.querySelector(".download-actions");
-    const progressFill = fragment.querySelector(".progress-fill");
-    const stats = fragment.querySelector(".download-stats");
-
-    title.textContent = download.title || "Preparing download";
-    meta.textContent = `${download.status.toUpperCase()} • ${download.uploader || "Unknown uploader"}`;
-    progressFill.style.width = `${Math.max(4, download.progressPercent || 0)}%`;
-    stats.textContent = download.status === "failed"
-      ? download.errorMessage || "Download failed."
-      : `${Math.round(download.progressPercent || 0)}% • ${download.speed || "Waiting for data"}${download.eta ? ` • ETA ${download.eta}` : ""}`;
-
-    if (download.status === "running") {
-      const cancelButton = document.createElement("button");
-      cancelButton.type = "button";
-      cancelButton.className = "ghost-button";
-      cancelButton.textContent = "Cancel";
-      cancelButton.addEventListener("click", async () => {
-        await window.tubeDeck.cancelDownload(download.id);
-      });
-      actions.appendChild(cancelButton);
+const renderResults = () => {
+  $("resultsPanel").hidden = !state.results.length;
+  $("resultCount").textContent = state.results.length;
+  $("resultsTitle").textContent = "YouTube results";
+  $("resultsList").innerHTML = state.results
+    .map(
+      (result) =>
+        '<button class="result-item ' +
+        (result.id === state.preview?.id ? "selected" : "") +
+        '" data-video="' +
+        escapeHtml(result.id) +
+        '" aria-pressed="' +
+        (result.id === state.preview?.id) +
+        '"><img src="' +
+        escapeHtml(result.thumbnail) +
+        '" alt="" loading="lazy"><span class="result-copy"><strong>' +
+        escapeHtml(result.title) +
+        "</strong><span>" +
+        escapeHtml(result.uploader) +
+        "</span><small>" +
+        escapeHtml(result.durationLabel) +
+        "</small></span></button>",
+    )
+    .join("");
+  $("moreResultsButton").hidden = !state.searchQuery || state.searchCount >= 48;
+};
+const updateFilename = async () => {
+  const sequence = ++filenameNumber;
+  const filename = await api.planFileName(metadata());
+  if (sequence === filenameNumber) $("fileNamePreview").textContent = filename;
+};
+const selectVideo = async (result, fetchDetails = true) => {
+  const sequence = ++selectionNumber;
+  state.preview = result;
+  state.cover = null;
+  $("emptyPreview").hidden = true;
+  $("selectedPreview").hidden = false;
+  $("previewTitle").textContent = result.title;
+  $("previewMeta").textContent = result.uploader + " · " + result.durationLabel;
+  $("metadataTitle").value = result.title;
+  $("metadataArtist").value = result.artist || result.uploader;
+  $("metadataAlbum").value = result.album || "";
+  $("coverPreview").src = result.thumbnail;
+  $("metadataDetails").open = false;
+  $("localAudio").pause();
+  $("localPlayer").hidden = true;
+  $("playerMessage").textContent = "Loading YouTube player…";
+  const frame = document.createElement("iframe");
+  frame.title = "Listen to " + result.title;
+  frame.allow = "autoplay; encrypted-media; fullscreen; picture-in-picture";
+  frame.setAttribute(
+    "sandbox",
+    "allow-scripts allow-same-origin allow-presentation",
+  );
+  frame.src =
+    state.player.base +
+    "/player?id=" +
+    result.id +
+    "&token=" +
+    state.player.token;
+  $("youtubePlayerHost").replaceChildren(frame);
+  renderResults();
+  renderStatus();
+  void updateFilename();
+  state.library = await api.getLibrary();
+  if (sequence !== selectionNumber) return;
+  renderStatus();
+  if (fetchDetails) {
+    try {
+      const preview = await api.previewVideo(result.url);
+      if (sequence !== selectionNumber) return;
+      state.preview = preview;
+      $("previewMeta").textContent =
+        preview.uploader + " · " + preview.durationLabel;
+      if (!result.artist && $("metadataArtist").value === result.uploader)
+        $("metadataArtist").value = preview.artist || preview.uploader;
+      if (!$("metadataAlbum").value)
+        $("metadataAlbum").value = preview.album || "";
+      renderStatus();
+    } catch (error) {
+      if (sequence === selectionNumber)
+        message(
+          "The player is ready. Video details could not load: " + error.message,
+          "danger",
+        );
     }
-
-    root.classList.add(statusTone(download.status));
-    dom.activeDownloadsList.appendChild(fragment);
-  });
-};
-
-const render = () => {
-  renderOutputDirectory();
-  renderPreview();
-  renderHistory();
-  renderDownloads();
-};
-
-const bootstrap = async () => {
-  // The renderer bootstraps from one payload so first paint is deterministic and easy to reason about.
-  const initialState = await window.tubeDeck.getBootstrapState();
-  state.settings = initialState.settings;
-  state.history = initialState.history;
-  state.downloads = initialState.downloads;
-  state.logs = initialState.logs;
-  render();
-
-  const recoveredDownloads = initialState.runtime?.startupRecovery?.recoveredDownloads || 0;
-  if (recoveredDownloads > 0) {
-    setMessage(`Recovered ${pluralize(recoveredDownloads, "interrupted download")} from the previous session.`, "");
   }
 };
-
-dom.previewForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  setBusy(true, "Previewing");
-  setMessage("");
-
+const queueSelected = async (downloadAgain = false) => {
+  if (!state.preview || $("downloadButton").disabled) return;
+  const preview = { ...state.preview },
+    title = $("metadataTitle").value || preview.title;
+  $("downloadButton").disabled = true;
   try {
-    const preview = await window.tubeDeck.previewVideo(dom.videoUrl.value);
-    state.preview = preview;
-    setMessage(`Preview loaded for "${preview.title}".`, "success");
-    renderPreview();
-  } catch (error) {
-    state.preview = null;
-    renderPreview();
-    setMessage(error.message, "danger");
+    const reply = await api.downloadVideo({
+      url: preview.url,
+      preview,
+      metadata: metadata(),
+      quality: $("qualitySelect").value,
+      downloadAgain,
+    });
+    if (reply.alreadyDownloaded) {
+      state.library = await api.getLibrary();
+      message("Already downloaded. Play it or show the file.", "success");
+    } else {
+      const job = state.downloads.find((item) => item.id === reply.id);
+      if (!job || ACTIVE.includes(job.status))
+        message(
+          reply.duplicate
+            ? "This track is already in the queue."
+            : '"' + title + '" added to the queue.',
+        );
+    }
   } finally {
-    setBusy(false, "Ready");
+    renderStatus();
+  }
+};
+const playFile = async (item) => {
+  state.library = await api.getLibrary();
+  const file = state.library.find(
+    (entry) => entry.videoId === item.videoId && entry.available,
+  );
+  if (!file) {
+    renderHistory();
+    renderStatus();
+    throw new Error("This MP3 is missing. Download it again to restore it.");
+  }
+  $("youtubePlayerHost").replaceChildren();
+  $("playerMessage").textContent = "Playing your downloaded MP3.";
+  $("localTitle").textContent = file.title;
+  $("localPlayer").hidden = false;
+  $("localAudio").src =
+    state.player.base +
+    "/audio?id=" +
+    file.videoId +
+    "&token=" +
+    state.player.token;
+  await $("localAudio").play();
+};
+const showDetails = (item) => {
+  $("detailsTitle").textContent = item.title;
+  $("detailsMessage").textContent = item.errorMessage || labels[item.status];
+  $("detailsTrace").textContent =
+    (item.trace || [])
+      .map((entry) => entry.timestamp + " · " + entry.message)
+      .join("\n") || "No additional details.";
+  $("detailsDialog").showModal();
+};
+const renderSettings = () => {
+  $("outputDirectoryLabel").textContent = state.settings.outputDirectory;
+  $("outputDirectoryLabel").title = state.settings.outputDirectory;
+  $("defaultQuality").value = state.settings.quality;
+  $("qualitySelect").value = state.settings.quality;
+  $("concurrencySelect").value = state.settings.concurrency;
+  $("notificationsCheckbox").checked = state.settings.notifications;
+  renderStatus();
+  renderQueue();
+};
+const showPlaylist = (url) => {
+  state.playlistUrl = url;
+  state.playlist = [];
+  $("playlistTitle").textContent = "Playlist link";
+  $("playlistMessage").textContent =
+    "Download this video, or choose tracks from the playlist.";
+  $("playlistTracks").hidden = true;
+  $("playlistSelectionActions").hidden = true;
+  $("thisVideoButton").disabled =
+    !new URL(url).searchParams.get("v") &&
+    !/youtu\.be|\/shorts\/|\/live\//.test(url);
+  $("chooseTracksButton").disabled = false;
+  $("chooseTracksButton").hidden = false;
+  $("playlistDialog").showModal();
+};
+$("previewForm").addEventListener(
+  "submit",
+  safely(async (event) => {
+    event.preventDefault();
+    const input = $("videoUrl").value.trim();
+    if (!input) throw new Error("Search for a song or paste a YouTube link.");
+    if (
+      /^https?:\/\//i.test(input) &&
+      new URL(input).searchParams.has("list")
+    ) {
+      showPlaylist(input);
+      return;
+    }
+    const sequence = ++requestNumber;
+    state.busy = true;
+    $("previewButton").disabled = true;
+    message("Searching…");
+    renderStatus();
+    try {
+      if (/^https?:\/\//i.test(input)) {
+        const result = await api.previewVideo(input);
+        if (sequence !== requestNumber) return;
+        await selectVideo(result, false);
+        message("Press play to check this version.");
+      } else {
+        state.searchQuery = input;
+        state.searchCount = 12;
+        const results = await api.searchVideos(input, state.searchCount);
+        if (sequence !== requestNumber) return;
+        state.results = results;
+        renderResults();
+        message(
+          results.length
+            ? "Choose a result to listen."
+            : "No results. Try another song or artist.",
+        );
+      }
+    } finally {
+      if (sequence === requestNumber) {
+        state.busy = false;
+        $("previewButton").disabled = false;
+        renderStatus();
+      }
+    }
+  }),
+);
+$("resultsList").addEventListener(
+  "click",
+  safely(async (event) => {
+    const element = event.target.closest("[data-video]");
+    if (element)
+      await selectVideo(
+        state.results.find((result) => result.id === element.dataset.video),
+      );
+  }),
+);
+$("moreResultsButton").addEventListener(
+  "click",
+  safely(async () => {
+    const sequence = ++requestNumber;
+    $("moreResultsButton").disabled = true;
+    try {
+      const count = Math.min(48, state.searchCount + 12);
+      const results = await api.searchVideos(state.searchQuery, count);
+      if (sequence !== requestNumber) return;
+      state.searchCount = count;
+      state.results = results;
+      renderResults();
+    } finally {
+      $("moreResultsButton").disabled = false;
+    }
+  }),
+);
+$("pasteButton").addEventListener(
+  "click",
+  safely(async () => {
+    const text = (await api.readClipboard()).trim();
+    if (text.split(/\r?\n/).filter(Boolean).length > 1) {
+      $("batchUrls").value = text;
+      $("batchDialog").showModal();
+    } else {
+      $("videoUrl").value = text;
+      $("videoUrl").focus();
+    }
+  }),
+);
+$("downloadButton").addEventListener(
+  "click",
+  safely(() => queueSelected()),
+);
+$("downloadAgainButton").addEventListener(
+  "click",
+  safely(() => queueSelected(true)),
+);
+$("playExistingButton").addEventListener(
+  "click",
+  safely(() => playFile(existingFile())),
+);
+$("showExistingButton").addEventListener(
+  "click",
+  safely(() => api.showItemInFolder(existingFile().outputPath)),
+);
+$("openYouTubeButton").addEventListener(
+  "click",
+  safely(() => api.openYouTube(state.preview.url)),
+);
+$("openFolderButton").addEventListener(
+  "click",
+  safely(() => api.openOutputDirectory()),
+);
+$("changeDirectoryButton").addEventListener(
+  "click",
+  safely(async () => {
+    state.settings = await api.chooseOutputDirectory();
+    renderSettings();
+  }),
+);
+$("pauseQueueButton").addEventListener(
+  "click",
+  safely(async () => {
+    state.paused = (await api.setQueuePaused(!state.paused)).paused;
+    renderQueue();
+  }),
+);
+$("continueButton").addEventListener(
+  "click",
+  safely(async () => {
+    state.paused = (await api.resumeRecovery()).paused;
+    renderQueue();
+  }),
+);
+const itemAction = safely(async (event) => {
+  const element = event.target.closest("[data-action]");
+  if (!element) return;
+  const { action, id } = element.dataset;
+  const item =
+    state.downloads.find((entry) => entry.id === id) ||
+    state.history.find((entry) => entry.id === id);
+  if (action === "details") showDetails(item);
+  if (action === "retry") await api.retryDownload(id);
+  if (action === "cancel") await api.cancelDownload(id);
+  if (action === "play") await playFile(item);
+  if (action === "show") {
+    const file = state.library.find(
+      (entry) => entry.videoId === item.videoId && entry.available,
+    );
+    await api.showItemInFolder(file.outputPath);
+  }
+  if (action === "again")
+    await api.downloadVideo({
+      url: item.url,
+      preview: item.preview,
+      metadata: item.metadata,
+      quality: item.quality,
+      downloadAgain: true,
+    });
+  if (action === "up" || action === "down") {
+    state.downloads = await api.reorderQueue(id, action === "up" ? -1 : 1);
+    renderQueue();
   }
 });
-
-dom.changeDirectoryButton.addEventListener("click", async () => {
-  state.settings = await window.tubeDeck.chooseOutputDirectory();
-  renderOutputDirectory();
-  setMessage(`Downloads will go to ${state.settings.outputDirectory}.`, "success");
+$("activeDownloadsList").addEventListener("click", itemAction);
+$("historyList").addEventListener("click", itemAction);
+$("batchButton").addEventListener("click", () => {
+  $("batchMessage").textContent = "";
+  $("batchDialog").showModal();
 });
-
-dom.openLogsButton.addEventListener("click", async () => {
-  await window.tubeDeck.openLogsDirectory();
-});
-
-window.tubeDeck.onDownloadUpdate((download) => {
-  const existingIndex = state.downloads.findIndex((item) => item.id === download.id);
-  if (existingIndex >= 0) {
-    state.downloads.splice(existingIndex, 1, download);
-  } else {
-    state.downloads.unshift(download);
+$("enqueueBatchButton").addEventListener("click", async () => {
+  $("enqueueBatchButton").disabled = true;
+  try {
+    const urls = [
+      ...new Set(
+        $("batchUrls")
+          .value.split(/\r?\n/)
+          .map((url) => url.trim())
+          .filter(Boolean),
+      ),
+    ];
+    if (!urls.length) throw new Error("Paste at least one YouTube video link.");
+    if (
+      urls.some((url) => {
+        try {
+          return new URL(url).searchParams.has("list");
+        } catch {
+          return false;
+        }
+      })
+    )
+      throw new Error(
+        "Add playlist links through the search field to choose their tracks.",
+      );
+    const replies = await api.enqueueBatch(
+      urls.map((url) => ({ url, quality: state.settings.quality })),
+    );
+    $("batchDialog").close();
+    message(
+      replies.length +
+        " links processed. Previously downloaded or queued tracks were skipped.",
+    );
+  } catch (error) {
+    $("batchMessage").textContent = error.message;
+  } finally {
+    $("enqueueBatchButton").disabled = false;
   }
-
-  renderDownloads();
 });
-
-window.tubeDeck.onHistoryUpdate((historyItem) => {
-  const existingIndex = state.history.findIndex((item) => item.id === historyItem.id);
-  if (existingIndex >= 0) {
-    state.history.splice(existingIndex, 1);
+$("thisVideoButton").addEventListener(
+  "click",
+  safely(async () => {
+    $("playlistDialog").close();
+    const result = await api.previewVideo(state.playlistUrl);
+    await selectVideo(result, false);
+  }),
+);
+$("chooseTracksButton").addEventListener("click", async () => {
+  $("chooseTracksButton").disabled = true;
+  $("playlistMessage").textContent = "Loading playlist tracks…";
+  try {
+    const playlist = await api.fetchPlaylist(state.playlistUrl);
+    state.playlist = playlist.results;
+    $("playlistTitle").textContent = playlist.title;
+    $("playlistMessage").textContent = playlist.results.length
+      ? "Select the tracks you want." +
+        (playlist.limited ? " Showing the first 100 tracks." : "")
+      : "No playable tracks were found.";
+    $("playlistTracks").innerHTML = playlist.results
+      .map(
+        (item) =>
+          '<label class="playlist-track"><input type="checkbox" value="' +
+          escapeHtml(item.id) +
+          '"><span><strong>' +
+          escapeHtml(item.title) +
+          "</strong><small>" +
+          escapeHtml(item.uploader + " · " + item.durationLabel) +
+          "</small></span></label>",
+      )
+      .join("");
+    $("playlistTracks").hidden = false;
+    $("playlistSelectionActions").hidden = !playlist.results.length;
+    $("chooseTracksButton").hidden = true;
+  } catch (error) {
+    $("playlistMessage").textContent = error.message;
+  } finally {
+    $("chooseTracksButton").disabled = false;
   }
-  state.history.unshift(historyItem);
-  state.history = state.history.slice(0, 40);
+});
+$("selectAllTracksButton").addEventListener("click", () => {
+  const boxes = [...$("playlistTracks").querySelectorAll("input")],
+    checked = boxes.some((box) => !box.checked);
+  boxes.forEach((box) => (box.checked = checked));
+  $("selectAllTracksButton").textContent = checked
+    ? "Deselect all"
+    : "Select all";
+});
+$("enqueueTracksButton").addEventListener(
+  "click",
+  safely(async () => {
+    const ids = [...$("playlistTracks").querySelectorAll("input:checked")].map(
+      (input) => input.value,
+    );
+    if (!ids.length) {
+      $("playlistMessage").textContent = "Select at least one track.";
+      return;
+    }
+    $("enqueueTracksButton").disabled = true;
+    try {
+      await api.enqueueBatch(
+        state.playlist
+          .filter((item) => ids.includes(item.id))
+          .map((preview) => ({
+            url: preview.url,
+            preview,
+            quality: state.settings.quality,
+          })),
+      );
+      $("playlistDialog").close();
+      message(ids.length + " selected tracks added.");
+    } finally {
+      $("enqueueTracksButton").disabled = false;
+    }
+  }),
+);
+for (const id of ["metadataTitle", "metadataArtist", "metadataAlbum"])
+  $(id).addEventListener("input", safely(updateFilename));
+$("chooseCoverButton").addEventListener(
+  "click",
+  safely(async () => {
+    const cover = await api.chooseCover();
+    if (cover) {
+      state.cover = cover;
+      $("coverPreview").src = cover.url;
+    }
+  }),
+);
+$("resetCoverButton").addEventListener("click", () => {
+  state.cover = null;
+  $("coverPreview").src = state.preview.thumbnail;
+});
+$("settingsButton").addEventListener("click", () =>
+  $("settingsDialog").showModal(),
+);
+document
+  .querySelectorAll("[data-close]")
+  .forEach((element) =>
+    element.addEventListener("click", () => $(element.dataset.close).close()),
+  );
+const saveSettings = safely(async () => {
+  state.settings = await api.updateSettings({
+    quality: $("defaultQuality").value,
+    concurrency: Number($("concurrencySelect").value),
+    notifications: $("notificationsCheckbox").checked,
+  });
+  renderSettings();
+});
+for (const id of [
+  "defaultQuality",
+  "concurrencySelect",
+  "notificationsCheckbox",
+])
+  $(id).addEventListener("change", saveSettings);
+$("repairToolsButton").addEventListener("click", async () => {
+  $("repairToolsButton").disabled = true;
+  $("diagnostics").hidden = false;
+  $("diagnostics").textContent = "Checking and repairing tools…";
+  try {
+    const report = await api.repairTools();
+    $("diagnostics").textContent =
+      "All download tools are ready.\n\nyt-dlp " +
+      report.ytDlp +
+      "\n" +
+      report.ffmpeg +
+      "\n" +
+      report.ffprobe +
+      "\nChecked " +
+      new Date(report.checkedAt).toLocaleString();
+  } catch (error) {
+    $("diagnostics").textContent = error.message;
+  } finally {
+    $("repairToolsButton").disabled = false;
+    $("copyDiagnosticsButton").hidden = false;
+  }
+});
+$("copyDiagnosticsButton").addEventListener(
+  "click",
+  safely(() => api.copyText($("diagnostics").textContent)),
+);
+$("copyDetailsButton").addEventListener(
+  "click",
+  safely(() =>
+    api.copyText(
+      $("detailsTitle").textContent +
+        "\n" +
+        $("detailsMessage").textContent +
+        "\n" +
+        $("detailsTrace").textContent,
+    ),
+  ),
+);
+$("openLogsButton").addEventListener(
+  "click",
+  safely(() => api.openLogsDirectory()),
+);
+const renderUpdates = (update) => {
+  $("updateMessage").textContent = update.message;
+  $("checkUpdatesButton").disabled = [
+    "unconfigured",
+    "checking",
+    "downloading",
+  ].includes(update.status);
+  $("checkUpdatesButton").textContent =
+    update.status === "available"
+      ? "Download update"
+      : update.status === "downloaded"
+        ? "Restart and install"
+        : "Check for updates";
+  $("checkUpdatesButton").dataset.state = update.status;
+};
+$("checkUpdatesButton").addEventListener(
+  "click",
+  safely(async () => {
+    if ($("checkUpdatesButton").dataset.state === "downloaded")
+      await api.installUpdate();
+    else renderUpdates(await api.checkForUpdates());
+  }),
+);
+$("closeLocalButton").addEventListener("click", () => {
+  $("localAudio").pause();
+  $("localPlayer").hidden = true;
+  if (state.preview) safely(() => selectVideo(state.preview, false))();
+});
+$("localAudio").addEventListener("error", () =>
+  message(
+    "This MP3 could not be played. Check that the file is still available.",
+    "danger",
+  ),
+);
+document.addEventListener("keydown", (event) => {
+  if (event.ctrlKey && event.key.toLowerCase() === "l") {
+    event.preventDefault();
+    $("videoUrl").focus();
+    $("videoUrl").select();
+  }
+  if (
+    event.ctrlKey &&
+    event.key === "Enter" &&
+    !document.querySelector("dialog[open]")
+  ) {
+    event.preventDefault();
+    safely(() => queueSelected())();
+  }
+});
+window.addEventListener("message", (event) => {
+  const frame = $("youtubePlayerHost").querySelector("iframe");
+  if (
+    !frame ||
+    event.source !== frame.contentWindow ||
+    event.origin !== state.player?.base ||
+    event.data?.source !== "tubedeck-player" ||
+    event.data.videoId !== state.preview?.id
+  )
+    return;
+  if (event.data.type === "error")
+    $("playerMessage").textContent = [101, 150].includes(event.data.detail)
+      ? "This video blocks embedded playback. Open it in YouTube to listen."
+      : "YouTube playback is unavailable here. Try Open in YouTube.";
+  if (event.data.type === "ready")
+    $("playerMessage").textContent = "Press play to listen before downloading.";
+  if (event.data.type === "state" && event.data.detail === 1)
+    $("playerMessage").textContent =
+      "Listening · Download MP3 when you find the right version.";
+});
+api.onDownloadUpdate((job) => {
+  const index = state.downloads.findIndex((item) => item.id === job.id);
+  if (index >= 0) state.downloads[index] = job;
+  else state.downloads.push(job);
+  renderQueue();
+  if (job.videoId === state.preview?.id || !state.preview) {
+    if (job.status === "failed") message(job.errorMessage, "danger");
+    if (job.status === "completed")
+      message('"' + job.title + '" saved and verified.', "success");
+    if (job.status === "canceled") message("Download canceled.");
+  }
+});
+api.onHistoryUpdate((item) => {
+  state.history = [
+    item,
+    ...state.history.filter((entry) => entry.id !== item.id),
+  ].slice(0, 40);
   renderHistory();
 });
-
-window.tubeDeck.onLogEntry((entry) => {
-  state.logs.unshift(entry);
-  state.logs = state.logs.slice(0, 200);
+api.onLibraryUpdate((library) => {
+  state.library = library;
+  renderHistory();
+  renderStatus();
 });
-
-window.tubeDeck.onSettingsUpdate((settings) => {
+api.onQueueUpdate((queue) => {
+  state.paused = queue.paused;
+  renderQueue();
+});
+api.onSettingsUpdate((settings) => {
   state.settings = settings;
-  renderOutputDirectory();
-  renderPreview();
+  renderSettings();
 });
-
-bootstrap().catch((error) => {
-  setMessage(`Startup failed: ${error.message}`, "danger");
-});
+api.onUpdateState(renderUpdates);
+const bootstrap = async () => {
+  const initial = await api.getBootstrapState();
+  state.settings = initial.settings;
+  state.history = initial.history;
+  state.downloads = initial.downloads;
+  state.library = initial.library;
+  state.player = initial.runtime.player;
+  state.paused = initial.runtime.queue.paused;
+  $("appVersion").textContent = initial.runtime.version;
+  renderSettings();
+  renderHistory();
+  renderUpdates(initial.runtime.updates);
+  if (initial.runtime.startupRecovery.recoveredDownloads)
+    message(
+      "Your previous queue is saved. Continue downloads when you are ready.",
+    );
+};
+bootstrap().catch((error) =>
+  message("Startup failed: " + error.message, "danger"),
+);

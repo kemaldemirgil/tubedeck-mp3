@@ -1,37 +1,44 @@
 const { contextBridge, ipcRenderer } = require("electron");
-
-// Expose a narrow, explicit bridge so the renderer never needs direct Node access.
+const invoke =
+  (channel) =>
+  (...args) =>
+    ipcRenderer.invoke(channel, ...args);
+const subscribe = (channel) => (callback) => {
+  const listener = (_event, data) => callback(data);
+  ipcRenderer.on(channel, listener);
+  return () => ipcRenderer.removeListener(channel, listener);
+};
 contextBridge.exposeInMainWorld("tubeDeck", {
-  getBootstrapState: () => ipcRenderer.invoke("app:get-bootstrap"),
-  previewVideo: (url) => ipcRenderer.invoke("video:preview", url),
-  downloadVideo: (payload) => ipcRenderer.invoke("video:download", payload),
-  cancelDownload: (downloadId) => ipcRenderer.invoke("video:cancel", downloadId),
-  chooseOutputDirectory: () => ipcRenderer.invoke("settings:choose-output-directory"),
-  openPath: (targetPath) => ipcRenderer.invoke("shell:open-path", targetPath),
-  showItemInFolder: (targetPath) => ipcRenderer.invoke("shell:show-item", targetPath),
-  openLogsDirectory: () => ipcRenderer.invoke("shell:open-logs-directory"),
-  onDownloadUpdate: (callback) => {
-    const listener = (_event, payload) => callback(payload);
-    ipcRenderer.on("downloads:updated", listener);
-
-    return () => ipcRenderer.removeListener("downloads:updated", listener);
-  },
-  onHistoryUpdate: (callback) => {
-    const listener = (_event, payload) => callback(payload);
-    ipcRenderer.on("history:updated", listener);
-
-    return () => ipcRenderer.removeListener("history:updated", listener);
-  },
-  onLogEntry: (callback) => {
-    const listener = (_event, payload) => callback(payload);
-    ipcRenderer.on("logs:append", listener);
-
-    return () => ipcRenderer.removeListener("logs:append", listener);
-  },
-  onSettingsUpdate: (callback) => {
-    const listener = (_event, payload) => callback(payload);
-    ipcRenderer.on("settings:updated", listener);
-
-    return () => ipcRenderer.removeListener("settings:updated", listener);
-  }
+  getBootstrapState: invoke("app:get-bootstrap"),
+  searchVideos: invoke("video:search"),
+  previewVideo: invoke("video:preview"),
+  fetchPlaylist: invoke("video:playlist"),
+  downloadVideo: invoke("video:download"),
+  enqueueBatch: invoke("video:batch"),
+  cancelDownload: invoke("video:cancel"),
+  retryDownload: invoke("video:retry"),
+  planFileName: invoke("video:filename"),
+  setQueuePaused: invoke("queue:pause"),
+  resumeRecovery: invoke("queue:continue"),
+  reorderQueue: invoke("queue:reorder"),
+  getLibrary: invoke("library:get"),
+  readClipboard: invoke("clipboard:read"),
+  copyText: invoke("clipboard:write"),
+  updateSettings: invoke("settings:update"),
+  chooseOutputDirectory: invoke("settings:choose-output-directory"),
+  chooseCover: invoke("settings:choose-cover"),
+  openOutputDirectory: invoke("shell:open-output"),
+  openPath: invoke("shell:open-path"),
+  showItemInFolder: invoke("shell:show-item"),
+  openYouTube: invoke("shell:open-youtube"),
+  openLogsDirectory: invoke("shell:open-logs-directory"),
+  repairTools: invoke("tools:repair"),
+  checkForUpdates: invoke("updates:check"),
+  installUpdate: invoke("updates:install"),
+  onDownloadUpdate: subscribe("downloads:updated"),
+  onHistoryUpdate: subscribe("history:updated"),
+  onLibraryUpdate: subscribe("library:updated"),
+  onQueueUpdate: subscribe("queue:updated"),
+  onSettingsUpdate: subscribe("settings:updated"),
+  onUpdateState: subscribe("updates:updated"),
 });

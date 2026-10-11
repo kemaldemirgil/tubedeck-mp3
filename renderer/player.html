@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <title>YouTube preview</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        background: #070b10;
+        color: #b8c5d6;
+        font:
+          14px "Segoe UI",
+          sans-serif;
+      }
+      #player {
+        width: 100%;
+        height: 100%;
+        display: block;
+        border: 0;
+      }
+      #message {
+        padding: 24px;
+      }
+      body:has(iframe) #message {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="player"></div>
+    <p id="message">Loading YouTube player…</p>
+    <script id="bootstrap"></script>
+  </body>
+</html>

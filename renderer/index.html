@@ -2,109 +2,377 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; script-src 'self';" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' https: http://127.0.0.1:*; style-src 'self'; script-src 'self'; frame-src http://127.0.0.1:*; media-src http://127.0.0.1:*; connect-src 'self' http://127.0.0.1:*;"
+    />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>TubeDeck MP3</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <div class="app-shell">
       <main class="workspace">
-        <header class="panel topbar">
+        <header class="topbar">
           <div class="brand-block">
-            <div class="brand-mark">TD</div>
-            <div class="brand-copy">
-              <h1>TubeDeck MP3</h1>
-              <p class="subtle-copy">Preview and download MP3.</p>
+            <div class="brand-mark" aria-hidden="true">TD</div>
+            <div>
+              <h1>TubeDeck <span>MP3</span></h1>
+              <p class="subtle-copy">Find it. Listen. Make it yours.</p>
             </div>
           </div>
-          <span id="statusBadge" class="chip success">Ready</span>
-        </header>
-
-        <section class="panel composer">
-          <div class="panel-header compact-header">
-            <p class="label">New download</p>
+          <div class="toolbar">
+            <span id="statusBadge" class="chip">Ready</span
+            ><button
+              id="settingsButton"
+              class="icon-button"
+              type="button"
+              aria-label="Open settings"
+              title="Settings"
+            >
+              ⚙
+            </button>
           </div>
-          <form id="previewForm" class="composer-form">
+        </header>
+        <section class="panel composer">
+          <form id="previewForm">
+            <label for="videoUrl" class="sr-only"
+              >Search YouTube or paste a link</label
+            >
             <div class="input-row">
-              <input id="videoUrl" name="videoUrl" type="url" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off" />
-              <button id="previewButton" class="primary-button" type="submit">Preview</button>
+              <input
+                id="videoUrl"
+                name="videoUrl"
+                type="text"
+                placeholder="Search YouTube or paste a link…"
+                autocomplete="off"
+                spellcheck="false"
+              /><button id="pasteButton" class="secondary-button" type="button">
+                Paste</button
+              ><button id="previewButton" class="primary-button" type="submit">
+                Search
+              </button>
             </div>
           </form>
-          <p id="formMessage" class="form-message"></p>
-        </section>
-
-        <section id="previewPanel" class="panel preview-panel empty-state">
-          <div class="empty-illustration"></div>
-          <div>
-            <h2>No preview</h2>
-            <p class="subtle-copy">Paste a link to load details.</p>
+          <div class="composer-bottom">
+            <p
+              id="formMessage"
+              class="form-message"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            ></p>
+            <button id="batchButton" class="text-button" type="button">
+              Add multiple links
+            </button>
           </div>
         </section>
+        <div id="recoveryBanner" class="notice" hidden>
+          <p id="recoveryMessage"></p>
+          <button id="continueButton" class="secondary-button" type="button">
+            Continue downloads
+          </button>
+        </div>
+        <section id="localPlayer" class="panel local-player" hidden>
+          <div class="panel-header">
+            <div>
+              <p class="label">Playing downloaded MP3</p>
+              <h2 id="localTitle"></h2>
+            </div>
+            <button id="closeLocalButton" class="text-button" type="button">
+              Close
+            </button>
+          </div>
+          <audio id="localAudio" controls preload="metadata"></audio>
+        </section>
+        <div class="discovery">
+          <section id="resultsPanel" class="panel results-panel" hidden>
+            <div class="panel-header">
+              <h2 id="resultsTitle">Results</h2>
+              <span id="resultCount" class="subtle-copy"></span>
+            </div>
+            <div id="resultsList" class="results-list"></div>
+            <button id="moreResultsButton" class="text-button" type="button">
+              More results
+            </button>
+          </section>
+          <section id="previewPanel" class="panel preview-panel">
+            <div id="emptyPreview" class="empty-state">
+              <div class="empty-symbol" aria-hidden="true">♫</div>
+              <h2>Your next track starts here</h2>
+              <p>
+                Search a song or artist, or paste a YouTube link.<br />Listen to
+                the right version before downloading.
+              </p>
+              <span class="shortcut"
+                >Ctrl+L to search · Ctrl+Enter to download</span
+              >
+            </div>
+            <div id="selectedPreview" hidden>
+              <div class="preview-heading">
+                <h2 id="previewTitle"></h2>
+                <p id="previewMeta" class="subtle-copy"></p>
+              </div>
+              <div id="youtubePlayerHost" class="player-host"></div>
+              <p
+                id="playerMessage"
+                class="subtle-copy"
+                role="status"
+                aria-live="polite"
+              ></p>
+              <div class="preview-line">
+                <span id="previewStage" class="chip">Ready to download</span
+                ><button
+                  id="openYouTubeButton"
+                  class="text-button"
+                  type="button"
+                >
+                  Open in YouTube ↗
+                </button>
+              </div>
+              <p id="previewFacts" class="subtle-copy"></p>
+              <div class="download-controls">
+                <label for="qualitySelect" class="sr-only">MP3 quality</label
+                ><select id="qualitySelect">
+                  <option value="high">High quality</option>
+                  <option value="balanced">Balanced</option>
+                  <option value="small">Small file · 128 kbps</option></select
+                ><button
+                  id="downloadButton"
+                  class="primary-button"
+                  type="button"
+                >
+                  Download MP3
+                </button>
+              </div>
+              <div id="existingActions" class="existing-actions" hidden>
+                <p>Already downloaded</p>
+                <div class="toolbar">
+                  <button
+                    id="playExistingButton"
+                    class="secondary-button"
+                    type="button"
+                  >
+                    Play MP3</button
+                  ><button
+                    id="showExistingButton"
+                    class="secondary-button"
+                    type="button"
+                  >
+                    Show file</button
+                  ><button
+                    id="downloadAgainButton"
+                    class="text-button"
+                    type="button"
+                  >
+                    Download again
+                  </button>
+                </div>
+              </div>
+              <details id="metadataDetails" class="metadata-editor">
+                <summary>Edit tags &amp; artwork</summary>
+                <div class="metadata-fields">
+                  <label
+                    >Title<input id="metadataTitle" maxlength="300" /></label
+                  ><label
+                    >Artist<input id="metadataArtist" maxlength="300" /></label
+                  ><label
+                    >Album<input
+                      id="metadataAlbum"
+                      maxlength="300"
+                      placeholder="Optional"
+                  /></label>
+                  <div class="cover-row">
+                    <img id="coverPreview" alt="Selected cover artwork" />
+                    <div>
+                      <button
+                        id="chooseCoverButton"
+                        class="secondary-button"
+                        type="button"
+                      >
+                        Choose cover</button
+                      ><button
+                        id="resetCoverButton"
+                        class="text-button"
+                        type="button"
+                      >
+                        Use video artwork
+                      </button>
+                    </div>
+                  </div>
+                  <p class="filename-preview">
+                    Filename: <span id="fileNamePreview"></span>
+                  </p>
+                </div>
+              </details>
+            </div>
+          </section>
+        </div>
       </main>
-
       <aside class="sidebar">
         <section class="panel utility-panel">
-          <div class="panel-header compact-header">
-            <div>
-              <p class="label">Output</p>
-              <h2>Folder</h2>
-            </div>
+          <div class="panel-header">
+            <h2>Save to</h2>
+            <span class="label">MP3 + artwork</span>
           </div>
-          <p id="outputDirectoryLabel" class="folder-path">Desktop</p>
-          <div class="sidebar-actions">
-            <button id="changeDirectoryButton" class="secondary-button wide-button" type="button">Change</button>
-            <button id="openLogsButton" class="ghost-button wide-button" type="button">Logs</button>
+          <p id="outputDirectoryLabel" class="folder-path"></p>
+          <div class="toolbar">
+            <button
+              id="changeDirectoryButton"
+              class="secondary-button"
+              type="button"
+            >
+              Change folder</button
+            ><button
+              id="openFolderButton"
+              class="secondary-button"
+              type="button"
+            >
+              Open folder
+            </button>
           </div>
         </section>
-
-        <section class="panel active-downloads">
+        <section class="panel queue-panel">
           <div class="panel-header">
-            <h2>Active</h2>
-            <span id="activeCount" class="chip">0 running</span>
+            <h2>Queue <span id="activeCount" class="count"></span></h2>
+            <button id="pauseQueueButton" class="text-button" type="button">
+              Pause
+            </button>
           </div>
+          <p id="queueMessage" class="subtle-copy"></p>
           <div id="activeDownloadsList" class="download-list"></div>
         </section>
-
         <section class="panel history-panel">
           <div class="panel-header">
-            <div>
-              <h2>Recent</h2>
-              <p id="historySummary" class="status-copy">No jobs yet</p>
-            </div>
-            <span id="historyCount" class="chip">0 jobs</span>
+            <h2>Recent</h2>
+            <span id="historyCount" class="subtle-copy"></span>
           </div>
+          <p id="historySummary" class="sr-only"></p>
           <div id="historyList" class="history-list"></div>
         </section>
       </aside>
     </div>
-
-    <template id="historyItemTemplate">
-      <button class="history-item" type="button">
-        <div class="history-text">
-          <p class="history-title"></p>
-          <p class="history-meta"></p>
-        </div>
-        <span class="history-status chip"></span>
+    <dialog id="settingsDialog">
+      <div class="dialog-heading">
+        <h2>Settings</h2>
+        <button
+          class="icon-button"
+          data-close="settingsDialog"
+          aria-label="Close settings"
+        >
+          ×
+        </button>
+      </div>
+      <div class="settings-fields">
+        <label
+          >Default MP3 quality<select id="defaultQuality">
+            <option value="high">High quality</option>
+            <option value="balanced">Balanced</option>
+            <option value="small">Small file · 128 kbps</option>
+          </select></label
+        ><label
+          >Simultaneous downloads<select id="concurrencySelect">
+            <option value="1">1 download</option>
+            <option value="2">2 downloads</option>
+            <option value="3">3 downloads</option>
+          </select></label
+        ><label class="checkbox-label"
+          ><input id="notificationsCheckbox" type="checkbox" /> Notify me when a
+          download finishes</label
+        >
+      </div>
+      <div class="settings-section">
+        <h3>Download tools</h3>
+        <p class="subtle-copy">
+          Check the downloader, audio converter, and file validator.
+        </p>
+        <button id="repairToolsButton" class="secondary-button">
+          Check and repair tools
+        </button>
+        <pre id="diagnostics" class="diagnostics" hidden></pre>
+        <button id="copyDiagnosticsButton" class="text-button" hidden>
+          Copy diagnostics</button
+        ><button id="openLogsButton" class="text-button">
+          Open logs folder
+        </button>
+      </div>
+      <div class="settings-section">
+        <h3>TubeDeck <span id="appVersion"></span></h3>
+        <p id="updateMessage" class="subtle-copy" role="status"></p>
+        <button id="checkUpdatesButton" class="secondary-button">
+          Check for updates
+        </button>
+      </div>
+    </dialog>
+    <dialog id="batchDialog">
+      <div class="dialog-heading">
+        <h2>Add multiple links</h2>
+        <button
+          class="icon-button"
+          data-close="batchDialog"
+          aria-label="Close batch entry"
+        >
+          ×
+        </button>
+      </div>
+      <label for="batchUrls" class="subtle-copy"
+        >One YouTube video link per line · up to 100 videos</label
+      ><textarea
+        id="batchUrls"
+        rows="7"
+        placeholder="https://www.youtube.com/watch?v=…"
+      ></textarea>
+      <p id="batchMessage" class="form-message" role="status"></p>
+      <button id="enqueueBatchButton" class="primary-button">
+        Add to queue
       </button>
-    </template>
-
-    <template id="downloadItemTemplate">
-      <article class="download-item">
-        <div class="download-header">
-          <div>
-            <p class="download-title"></p>
-            <p class="download-meta"></p>
-          </div>
-          <div class="download-actions"></div>
-        </div>
-        <div class="progress-track">
-          <div class="progress-fill"></div>
-        </div>
-        <div class="download-stats"></div>
-      </article>
-    </template>
-
+    </dialog>
+    <dialog id="playlistDialog">
+      <div class="dialog-heading">
+        <h2 id="playlistTitle">Playlist link</h2>
+        <button
+          class="icon-button"
+          data-close="playlistDialog"
+          aria-label="Close playlist selection"
+        >
+          ×
+        </button>
+      </div>
+      <p id="playlistMessage" class="subtle-copy">
+        Download this video, or choose tracks from the playlist.
+      </p>
+      <div class="toolbar">
+        <button id="thisVideoButton" class="secondary-button">This video</button
+        ><button id="chooseTracksButton" class="primary-button">
+          Choose tracks
+        </button>
+      </div>
+      <div id="playlistTracks" class="playlist-tracks" hidden></div>
+      <div id="playlistSelectionActions" hidden>
+        <button id="selectAllTracksButton" class="text-button">
+          Select all</button
+        ><button id="enqueueTracksButton" class="primary-button">
+          Add selected tracks
+        </button>
+      </div>
+    </dialog>
+    <dialog id="detailsDialog">
+      <div class="dialog-heading">
+        <h2 id="detailsTitle">Download details</h2>
+        <button
+          class="icon-button"
+          data-close="detailsDialog"
+          aria-label="Close download details"
+        >
+          ×
+        </button>
+      </div>
+      <p id="detailsMessage"></p>
+      <pre id="detailsTrace" class="diagnostics"></pre>
+      <button id="copyDetailsButton" class="secondary-button">
+        Copy details
+      </button>
+    </dialog>
     <script src="./app.js"></script>
   </body>
 </html>

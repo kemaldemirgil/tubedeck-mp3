@@ -10,17 +10,24 @@ const ffmpegPackage = require("ffmpeg-static/package.json");
 const ffmpegMetadata = ffmpegPackage[ffmpegPackage.name];
 const releaseTag = ffmpegMetadata["binary-release-tag"];
 const executableBaseName = ffmpegMetadata["executable-base-name"];
-const binariesBaseUrl = "https://github.com/eugeneware/ffmpeg-static/releases/download";
+const binariesBaseUrl =
+  "https://github.com/eugeneware/ffmpeg-static/releases/download";
 
 const getRuntimeFfmpegPath = (binDirectory) =>
-  path.join(binDirectory, process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg");
+  path.join(
+    binDirectory,
+    process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg",
+  );
 
 const normalizeBundledPath = (candidatePath) => {
   if (!candidatePath) {
     return "";
   }
 
-  return candidatePath.replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
+  return candidatePath.replace(
+    `${path.sep}app.asar${path.sep}`,
+    `${path.sep}app.asar.unpacked${path.sep}`,
+  );
 };
 
 const checkBinary = async (binaryPath) => {
@@ -29,9 +36,14 @@ const checkBinary = async (binaryPath) => {
   }
 
   return new Promise((resolve) => {
-    execFile(binaryPath, ["-version"], { windowsHide: true }, (error) => {
-      resolve(!error);
-    });
+    execFile(
+      binaryPath,
+      ["-version"],
+      { windowsHide: true, timeout: 10000 },
+      (error) => {
+        resolve(!error);
+      },
+    );
   });
 };
 
@@ -44,13 +56,18 @@ const downloadRuntimeBinary = async ({ binDirectory, logger, onLogEntry }) => {
 
   const startedEntry = logger.info("ffmpeg.download.started", {
     targetPath,
-    downloadUrl
+    downloadUrl,
   });
   onLogEntry?.(startedEntry);
 
-  const response = await fetch(downloadUrl, { redirect: "follow" });
+  const response = await fetch(downloadUrl, {
+    redirect: "follow",
+    signal: AbortSignal.timeout(120000),
+  });
   if (!response.ok || !response.body) {
-    throw new Error(`Unable to download ffmpeg (${response.status} ${response.statusText}).`);
+    throw new Error(
+      `Unable to download ffmpeg (${response.status} ${response.statusText}).`,
+    );
   }
 
   try {
@@ -58,7 +75,7 @@ const downloadRuntimeBinary = async ({ binDirectory, logger, onLogEntry }) => {
     await pipeline(
       Readable.fromWeb(response.body),
       createGunzip(),
-      fs.createWriteStream(tempPath)
+      fs.createWriteStream(tempPath),
     );
 
     fs.renameSync(tempPath, targetPath);
@@ -79,7 +96,7 @@ const downloadRuntimeBinary = async ({ binDirectory, logger, onLogEntry }) => {
   }
 
   const completedEntry = logger.info("ffmpeg.download.completed", {
-    targetPath
+    targetPath,
   });
   onLogEntry?.(completedEntry);
 
@@ -88,6 +105,7 @@ const downloadRuntimeBinary = async ({ binDirectory, logger, onLogEntry }) => {
 
 const createFfmpegManager = ({ binDirectory, logger, onLogEntry }) => {
   let cachedPath = "";
+  let resolving = null;
 
   const ensureFfmpegBinary = async () => {
     // Resolution order matters: prefer the packaged binary, then a previously downloaded runtime copy.
@@ -108,7 +126,11 @@ const createFfmpegManager = ({ binDirectory, logger, onLogEntry }) => {
     }
 
     if (process.platform === "win32") {
-      cachedPath = await downloadRuntimeBinary({ binDirectory, logger, onLogEntry });
+      cachedPath = await downloadRuntimeBinary({
+        binDirectory,
+        logger,
+        onLogEntry,
+      });
       return cachedPath;
     }
 
@@ -116,10 +138,16 @@ const createFfmpegManager = ({ binDirectory, logger, onLogEntry }) => {
   };
 
   return {
-    ensureFfmpegBinary
+    ensureFfmpegBinary: () => {
+      if (!resolving)
+        resolving = ensureFfmpegBinary().finally(() => {
+          resolving = null;
+        });
+      return resolving;
+    },
   };
 };
 
 module.exports = {
-  createFfmpegManager
+  createFfmpegManager,
 };
